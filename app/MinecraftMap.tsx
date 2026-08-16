@@ -207,6 +207,47 @@ function drawGeometry(
   else context.stroke();
 }
 
+function minecraftCellSize() {
+  return 4;
+}
+
+function cellNoise(x: number, y: number, salt = 0) {
+  let value = Math.imul(x, 374761393) + Math.imul(y, 668265263) + Math.imul(salt, 1442695041);
+  value = Math.imul(value ^ (value >>> 13), 1274126177);
+  return (value ^ (value >>> 16)) >>> 0;
+}
+
+function distanceFromCells(
+  width: number,
+  height: number,
+  isOrigin: (index: number) => boolean,
+  maxDistance = 16,
+) {
+  const distances = new Uint8Array(width * height);
+  for (let index = 0; index < distances.length; index += 1) {
+    distances[index] = isOrigin(index) ? 0 : maxDistance;
+  }
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x;
+      let distance = distances[index];
+      if (x > 0) distance = Math.min(distance, distances[index - 1] + 1);
+      if (y > 0) distance = Math.min(distance, distances[index - width] + 1);
+      distances[index] = distance;
+    }
+  }
+  for (let y = height - 1; y >= 0; y -= 1) {
+    for (let x = width - 1; x >= 0; x -= 1) {
+      const index = y * width + x;
+      let distance = distances[index];
+      if (x + 1 < width) distance = Math.min(distance, distances[index + 1] + 1);
+      if (y + 1 < height) distance = Math.min(distance, distances[index + width] + 1);
+      distances[index] = distance;
+    }
+  }
+  return distances;
+}
+
 function renderMinecraftCells(
   map: MapLibreMap,
   target: HTMLCanvasElement,
@@ -217,7 +258,7 @@ function renderMinecraftCells(
   const source = map.getCanvas();
   if (source.clientWidth === 0 || source.clientHeight === 0) return;
 
-  const cellSize = window.innerWidth < 720 ? 5 : 6;
+  const cellSize = minecraftCellSize();
   const width = Math.max(1, Math.ceil(source.clientWidth / cellSize));
   const height = Math.max(1, Math.ceil(source.clientHeight / cellSize));
   // The same bitmap hosts the cheap moving preview. Reset it before the
@@ -297,6 +338,43 @@ function renderMinecraftCells(
     }
   }
 
+  // Minecraft coastlines are rarely a single hard blue/green edge. Infer a
+  // narrow, irregular beach from the real shoreline, while preserving mapped
+  // roads, structures, cliffs, and snow. Water depth is retained separately
+  // for the stepped blue bands visible on filled maps.
+  const anchor = map.project([0, 0]);
+  const distanceToWater = distanceFromCells(
+    width,
+    height,
+    (index) => materials[index] === "water",
+    4,
+  );
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x;
+      const material = materials[index];
+      const distance = distanceToWater[index];
+      if (distance < 1 || distance > 2) continue;
+      const worldX = Math.floor((x * cellSize - anchor.x) / cellSize);
+      const worldY = Math.floor((y * cellSize - anchor.y) / cellSize);
+      const noise = cellNoise(worldX, worldY, 19);
+      const openShore = material === "grass" || material === "park" || material === "scrub";
+      const woodedShore = material === "forest" || material === "farmland";
+      if (
+        (openShore && (distance === 1 ? noise % 5 !== 0 : noise % 4 === 0)) ||
+        (woodedShore && distance === 1 && noise % 6 === 0)
+      ) {
+        materials[index] = "sand";
+      }
+    }
+  }
+  const waterDepth = distanceFromCells(
+    width,
+    height,
+    (index) => materials[index] !== "water",
+    16,
+  );
+
   // Sample cached DEM tiles for the current view. Minecraft's
   // four map shades are chosen from the elevation change toward the north, so
   // hills form irregular bands instead of vector-style feature outlines.
@@ -359,7 +437,6 @@ function renderMinecraftCells(
   // visible on a filled map without outlining the source polygons.
   const materialImage = context.createImageData(width, height);
   const materialPixels = materialImage.data;
-  const anchor = map.project([0, 0]);
   const latitude = map.getCenter().lat * (Math.PI / 180);
   const metersPerCell = (156543.03392 * Math.cos(latitude) * cellSize) / 2 ** map.getZoom();
   const slopeThreshold = Math.max(1, metersPerCell * 0.015);
@@ -369,26 +446,53 @@ function renderMinecraftCells(
       const material = materials[index];
       const worldX = Math.floor((x * cellSize - anchor.x) / cellSize);
       const worldY = Math.floor((y * cellSize - anchor.y) / cellSize);
-      const hash = Math.abs((Math.floor(worldX / 2) * 73428767) ^ (Math.floor(worldY / 2) * 912931));
+      const hash = cellNoise(worldX, worldY, 31);
+      const cluster = cellNoise(Math.floor(worldX / 6), Math.floor(worldY / 6), 47);
       let shade = 1;
+      if (material === "water") {
+        const depth = waterDepth[index];
+        if (depth <= 1) shade = 2;
+        else if (depth <= 3) shade = 1;
+        else if (depth <= 8) shade = 0;
+        else shade = cluster % 7 === 0 || hash % 31 === 0 ? 3 : 0;
+        if (depth > 2 && hash % 23 === 0) shade = shade === 3 ? 0 : 1;
+      } else if (material === "forest") {
+        shade = cluster % 5 === 0 || hash % 7 < 2 ? 0 : 1;
+        if (hash % 29 === 0) shade = 2;
+        else if (hash % 41 === 0) shade = 3;
+      } else if (material === "scrub") {
+        shade = cluster % 4 === 0 || hash % 8 < 2 ? 0 : 1;
+        if (hash % 31 === 0) shade = 2;
+      } else if (material === "grass" || material === "park") {
+        shade = cluster % 7 === 0 || hash % 11 < 2 ? 0 : 1;
+        if (hash % 23 === 0) shade = 2;
+        else if (hash % 97 === 0) shade = 3;
+      } else if (material === "sand") {
+        shade = hash % 9 < 3 ? 0 : hash % 17 < 3 ? 2 : 1;
+        if (hash % 101 === 0) shade = 3;
+      } else if (material === "built") {
+        shade = hash % 8 < 2 ? 0 : hash % 19 === 0 ? 2 : 1;
+      } else if (material === "building") {
+        shade = hash % 7 === 0 ? 3 : hash % 5 === 0 ? 1 : 0;
+      } else if (material === "farmland") {
+        const rowBand = ((worldX + worldY) % 7 + 7) % 7;
+        shade = rowBand < 2 || hash % 13 === 0 ? 0 : 1;
+        if (hash % 37 === 0) shade = 2;
+      } else if (material === "rock") {
+        shade = hash % 7 < 2 ? 0 : hash % 23 === 0 ? 2 : 1;
+      } else if (material === "road") {
+        shade = hash % 17 === 0 ? 0 : 1;
+      } else if (hash % 29 === 0) {
+        shade = 0;
+      }
+
       const elevation = elevations[index];
       const northElevation = y > 0 ? elevations[index - width] : elevation;
-      if (Number.isFinite(elevation) && Number.isFinite(northElevation)) {
+      if (material !== "water" && Number.isFinite(elevation) && Number.isFinite(northElevation)) {
         const rise = elevation - northElevation;
         if (rise > slopeThreshold) shade = 2;
         else if (rise < -slopeThreshold * 2) shade = 3;
         else if (rise < -slopeThreshold) shade = 0;
-      }
-      if (shade === 1) {
-        if (material === "forest" || material === "scrub") {
-          if (hash % 11 < 3) shade = 0;
-          else if (hash % 23 === 0) shade = 2;
-        } else if (material === "grass" || material === "park") {
-          if (hash % 37 < 2) shade = 0;
-          else if (hash % 47 === 0) shade = 2;
-        } else if (material !== "water" && hash % 71 === 0) {
-          shade = 0;
-        }
       }
 
       const [red, green, blue] = mapPaletteRgb[material][shade];
@@ -406,7 +510,7 @@ function renderMovingPreview(map: MapLibreMap, target: HTMLCanvasElement) {
   const source = map.getCanvas();
   if (source.clientWidth === 0 || source.clientHeight === 0) return;
 
-  const cellSize = window.innerWidth < 720 ? 5 : 6;
+  const cellSize = minecraftCellSize();
   const width = Math.max(1, Math.ceil(source.clientWidth / cellSize));
   const height = Math.max(1, Math.ceil(source.clientHeight / cellSize));
   if (target.width !== width) target.width = width;
