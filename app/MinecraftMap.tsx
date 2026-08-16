@@ -145,7 +145,8 @@ const layerMaterials: ReadonlyArray<{ layer: string; material: Material; kind: "
   { layer: "water", material: "water", kind: "fill" },
   { layer: "rivers", material: "water", kind: "line" },
   { layer: "roads", material: "road", kind: "line" },
-  { layer: "primary-roads", material: "road", kind: "line" },
+  { layer: "secondary-roads", material: "road", kind: "line" },
+  { layer: "local-roads", material: "road", kind: "line" },
   { layer: "buildings", material: "building", kind: "fill" },
 ];
 
@@ -247,7 +248,7 @@ function renderMinecraftCells(
     context.clearRect(0, 0, width, height);
     context.fillStyle = "#ffffff";
     context.strokeStyle = "#ffffff";
-    if (layer === "roads" || layer === "primary-roads") {
+    if (layer === "roads" || layer === "secondary-roads" || layer === "local-roads") {
       context.lineWidth = map.getZoom() >= 17.5 ? 1.5 : 1;
     } else if (layer === "rivers") {
       context.lineWidth = map.getZoom() >= 18 ? 1.5 : 1;
@@ -541,26 +542,39 @@ const minecraftStyle: maplibregl.StyleSpecification = {
       type: "line",
       source: "world",
       "source-layer": "transportation",
-      minzoom: 13,
-      filter: ["in", ["get", "class"], ["literal", ["motorway", "trunk"]]],
+      minzoom: 11,
+      filter: ["in", ["get", "class"], ["literal", ["motorway", "trunk", "primary"]]],
       layout: { "line-cap": "butt", "line-join": "bevel" },
       paint: {
         "line-color": "#606060",
-        "line-width": ["interpolate", ["linear"], ["zoom"], 13, 1, 18, 3],
+        "line-width": ["interpolate", ["linear"], ["zoom"], 11, 0.6, 15, 1.5, 18, 3],
         "line-opacity": 1,
       },
     },
     {
-      id: "primary-roads",
+      id: "secondary-roads",
       type: "line",
       source: "world",
       "source-layer": "transportation",
-      minzoom: 17,
-      filter: ["==", ["get", "class"], "primary"],
+      minzoom: 13.5,
+      filter: ["==", ["get", "class"], "secondary"],
       layout: { "line-cap": "butt", "line-join": "bevel" },
       paint: {
         "line-color": "#606060",
-        "line-width": ["interpolate", ["linear"], ["zoom"], 17, 1, 18, 2],
+        "line-width": ["interpolate", ["linear"], ["zoom"], 13.5, 0.5, 18, 2],
+      },
+    },
+    {
+      id: "local-roads",
+      type: "line",
+      source: "world",
+      "source-layer": "transportation",
+      minzoom: 15,
+      filter: ["in", ["get", "class"], ["literal", ["tertiary", "minor"]]],
+      layout: { "line-cap": "butt", "line-join": "bevel" },
+      paint: {
+        "line-color": "#606060",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 15, 0.5, 18, 1.25],
       },
     },
     {
