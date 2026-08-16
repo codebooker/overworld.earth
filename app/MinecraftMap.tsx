@@ -726,13 +726,6 @@ function speakNavigation(text: string) {
   window.speechSynthesis.speak(utterance);
 }
 
-const destinations = [
-  { label: "New York", center: [-74.006, 40.7128] as [number, number], zoom: 10 },
-  { label: "The Alps", center: [10.1, 46.5] as [number, number], zoom: 7 },
-  { label: "Amazon", center: [-62.2, -3.1] as [number, number], zoom: 6 },
-  { label: "Tokyo", center: [139.6917, 35.6895] as [number, number], zoom: 10 },
-];
-
 const minecraftStyle: maplibregl.StyleSpecification = {
   version: 8,
   glyphs: "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
@@ -934,7 +927,7 @@ export default function MinecraftMap() {
   const [results, setResults] = useState<SearchResult[]>([]);
   const [searching, setSearching] = useState(false);
   const [message, setMessage] = useState("");
-  const [legendOpen, setLegendOpen] = useState(true);
+  const [legendOpen, setLegendOpen] = useState(false);
   const [ready, setReady] = useState(false);
   const [gpsMode, setGpsMode] = useState<"idle" | "locating" | "tracking">("idle");
   const [followingLocation, setFollowingLocation] = useState(false);
@@ -1226,16 +1219,6 @@ export default function MinecraftMap() {
     resetRoute(true);
     setNavigationVisible(false);
     setMessage("Navigation ended.");
-  };
-
-  const goTo = (title: string, center: [number, number], destinationZoom = 10, detail = "Real terrain · block by block") => {
-    setLocationFollowing(false);
-    mapRef.current?.flyTo({ center, zoom: destinationZoom, duration: 1300, essential: true });
-    markerRef.current?.remove();
-    markerRef.current = null;
-    selectedPointRef.current = null;
-    setPlace({ title, detail });
-    setResults([]);
   };
 
   const searchWorld = async (event: FormEvent<HTMLFormElement>) => {
@@ -1731,7 +1714,14 @@ export default function MinecraftMap() {
           >
             ➤
           </button>
-          <button onClick={() => setLegendOpen((open) => !open)} aria-label="Toggle map key" title="Map key">▦</button>
+          <button
+            onClick={() => setLegendOpen((open) => !open)}
+            aria-label={legendOpen ? "Close map key" : "Open map key"}
+            aria-pressed={legendOpen}
+            title="Map key"
+          >
+            <span className="key-tool-icon" aria-hidden="true" />
+          </button>
         </div>
 
         {navigationOpen && (
@@ -1846,18 +1836,6 @@ export default function MinecraftMap() {
             </div>
           </aside>
         )}
-
-        <nav className="destinations" aria-label="Quick destinations">
-          <span>PORTALS</span>
-          {destinations.map((destination) => (
-            <button
-              key={destination.label}
-              onClick={() => goTo(destination.label, destination.center, destination.zoom)}
-            >
-              {destination.label}
-            </button>
-          ))}
-        </nav>
 
         <div className="coordinates">X {coordinates.lng.toFixed(4)}&nbsp;&nbsp; Z {coordinates.lat.toFixed(4)}</div>
         <div className="map-message" aria-live="polite">{message}</div>
