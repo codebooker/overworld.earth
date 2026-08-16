@@ -11,6 +11,28 @@ type SearchResult = {
   lon: string;
   boundingbox: [string, string, string, string];
   type: string;
+  name?: string;
+  address?: Partial<
+    Record<
+      | "house_number"
+      | "road"
+      | "pedestrian"
+      | "footway"
+      | "path"
+      | "neighbourhood"
+      | "quarter"
+      | "suburb"
+      | "borough"
+      | "city_district"
+      | "city"
+      | "town"
+      | "village"
+      | "county"
+      | "state"
+      | "country",
+      string
+    >
+  >;
 };
 
 type PlaceLookupResponse = {
@@ -103,6 +125,51 @@ function exploredPlaceDetailZoom(zoom: number) {
   if (zoom < 14) return 13;
   if (zoom < 15) return 14;
   return 15;
+}
+
+function searchResultLabels(result: SearchResult) {
+  const parts = result.display_name.split(",").map((part) => part.trim()).filter(Boolean);
+  const address = result.address ?? {};
+  const houseNumber = address.house_number?.trim();
+  const road = (address.road ?? address.pedestrian ?? address.footway ?? address.path)?.trim();
+  const streetAddress = houseNumber && road ? `${houseNumber} ${road}` : undefined;
+  const resultName = result.name?.trim();
+  const namedPlace =
+    resultName && resultName !== houseNumber && !/^\d+[A-Za-z]?(?:[-–/]\d+[A-Za-z]?)?$/.test(resultName)
+      ? resultName
+      : undefined;
+
+  let consumedParts = 1;
+  let primary = namedPlace ?? streetAddress;
+  if (!primary && /^\d+[A-Za-z]?(?:[-–/]\d+[A-Za-z]?)?$/.test(parts[0] ?? "") && parts[1]) {
+    primary = `${parts[0]} ${parts[1]}`;
+    consumedParts = 2;
+  }
+  primary ??= parts[0] ?? "Unnamed place";
+
+  const locality =
+    address.neighbourhood ??
+    address.quarter ??
+    address.suburb ??
+    address.borough ??
+    address.city_district;
+  const settlement = address.city ?? address.town ?? address.village;
+  const semanticDetails = [
+    namedPlace ? streetAddress : undefined,
+    locality,
+    settlement,
+    address.county,
+    address.state,
+    address.state ? undefined : address.country,
+  ]
+    .map((part) => part?.trim())
+    .filter((part): part is string => Boolean(part) && part !== primary)
+    .filter((part, index, values) => values.indexOf(part) === index);
+  const secondary = semanticDetails.length > 0
+    ? semanticDetails.join(", ")
+    : parts.slice(consumedParts).join(", ");
+
+  return { primary, secondary };
 }
 
 function terrainElevationAt(
@@ -1495,7 +1562,12 @@ export default function MinecraftMap() {
     setSearching(true);
     setMessage("");
     try {
-      const params = new URLSearchParams({ q: term, format: "jsonv2", limit: "5" });
+      const params = new URLSearchParams({
+        q: term,
+        format: "jsonv2",
+        limit: "5",
+        addressdetails: "1",
+      });
       const response = await fetch(`https://nominatim.openstreetmap.org/search?${params}`);
       if (!response.ok) throw new Error("Search unavailable");
       const data = (await response.json()) as SearchResult[];
@@ -1513,10 +1585,10 @@ export default function MinecraftMap() {
     const north = Number(result.boundingbox[1]);
     const west = Number(result.boundingbox[2]);
     const east = Number(result.boundingbox[3]);
-    const nameParts = result.display_name.split(",").map((part) => part.trim());
+    const labels = searchResultLabels(result);
     const resultCenter: [number, number] = [Number(result.lon), Number(result.lat)];
     if (navigationOpenRef.current) {
-      selectNavigationDestination(nameParts[0], resultCenter);
+      selectNavigationDestination(labels.primary, resultCenter);
       const map = mapRef.current;
       if (map) {
         map.fitBounds([[west, south], [east, north]], {
@@ -1544,8 +1616,8 @@ export default function MinecraftMap() {
     markerRef.current = new maplibregl.Marker({ element: markerNode, anchor: "bottom" })
       .setLngLat(resultCenter)
       .addTo(mapRef.current!);
-    selectedPointRef.current = { title: nameParts[0], center: resultCenter };
-    setPlace({ title: nameParts[0], detail: nameParts.slice(1, 3).join(", ") || result.type });
+    selectedPointRef.current = { title: labels.primary, center: resultCenter };
+    setPlace({ title: labels.primary, detail: labels.secondary || result.type });
     setQuery(result.display_name);
     setResults([]);
   };
@@ -1964,15 +2036,18 @@ export default function MinecraftMap() {
           </form>
           {results.length > 0 && (
             <div className="search-results" role="listbox" aria-label="Place search results">
-              {results.map((result) => (
-                <button key={result.place_id} onClick={() => chooseResult(result)} role="option">
-                  <span className="result-pin" aria-hidden="true" />
-                  <span>
-                    <strong>{result.display_name.split(",")[0]}</strong>
-                    <small>{result.display_name.split(",").slice(1).join(",")}</small>
-                  </span>
-                </button>
-              ))}
+              {results.map((result) => {
+                const labels = searchResultLabels(result);
+                return (
+                  <button key={result.place_id} onClick={() => chooseResult(result)} role="option">
+                    <span className="result-pin" aria-hidden="true" />
+                    <span>
+                      <strong>{labels.primary}</strong>
+                      <small>{labels.secondary || result.type}</small>
+                    </span>
+                  </button>
+                );
+              })}
               <div className="geocode-credit">Search by OpenStreetMap</div>
             </div>
           )}
