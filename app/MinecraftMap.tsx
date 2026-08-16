@@ -977,6 +977,13 @@ export default function MinecraftMap() {
 
     map.touchZoomRotate.disableRotation();
     map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
+    const collapseAttribution = () => {
+      const attribution = mapNode.current?.querySelector<HTMLDetailsElement>(".maplibregl-ctrl-attrib");
+      if (!attribution) return;
+      attribution.open = false;
+      attribution.classList.remove("maplibregl-compact-show");
+    };
+    collapseAttribution();
     let pixelFrame: number | null = null;
     let previewFrame: number | null = null;
     let pixelTimer: number | null = null;
@@ -1019,6 +1026,7 @@ export default function MinecraftMap() {
     const loadingTimeout = window.setTimeout(() => setReady(true), 10000);
     map.on("load", () => {
       window.clearTimeout(loadingTimeout);
+      collapseAttribution();
       const center = map.getCenter();
       setCoordinates({ lng: center.lng, lat: center.lat });
       setZoom(Math.round(map.getZoom()));
