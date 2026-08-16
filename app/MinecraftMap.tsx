@@ -121,10 +121,20 @@ const mapPalettes: Record<Material, readonly [string, string, string, string]> =
   building: ["#4e4e4e", "#606060", "#707070", "#3b3b3b"],
 };
 
+const mapPaletteRgb = Object.fromEntries(
+  (Object.entries(mapPalettes) as Array<[Material, readonly string[]]>).map(([material, palette]) => [
+    material,
+    palette.map((color) => [
+      Number.parseInt(color.slice(1, 3), 16),
+      Number.parseInt(color.slice(3, 5), 16),
+      Number.parseInt(color.slice(5, 7), 16),
+    ]),
+  ]),
+) as Record<Material, Array<[number, number, number]>>;
+
 const layerMaterials: ReadonlyArray<{ layer: string; material: Material; kind: "fill" | "line" }> = [
   { layer: "farmland", material: "farmland", kind: "fill" },
   { layer: "built-land", material: "built", kind: "fill" },
-  { layer: "grass", material: "grass", kind: "fill" },
   { layer: "scrub", material: "scrub", kind: "fill" },
   { layer: "wood", material: "forest", kind: "fill" },
   { layer: "rock", material: "rock", kind: "fill" },
@@ -135,6 +145,7 @@ const layerMaterials: ReadonlyArray<{ layer: string; material: Material; kind: "
   { layer: "water", material: "water", kind: "fill" },
   { layer: "rivers", material: "water", kind: "line" },
   { layer: "roads", material: "road", kind: "line" },
+  { layer: "primary-roads", material: "road", kind: "line" },
   { layer: "buildings", material: "building", kind: "fill" },
 ];
 
@@ -205,7 +216,7 @@ function renderMinecraftCells(
   const source = map.getCanvas();
   if (source.clientWidth === 0 || source.clientHeight === 0) return;
 
-  const cellSize = window.innerWidth < 720 ? 4 : 4;
+  const cellSize = window.innerWidth < 720 ? 5 : 6;
   const width = Math.max(1, Math.ceil(source.clientWidth / cellSize));
   const height = Math.max(1, Math.ceil(source.clientHeight / cellSize));
   if (target.width !== width) target.width = width;
@@ -227,36 +238,37 @@ function renderMinecraftCells(
   }
 
   const materials = new Array<Material>(width * height).fill("grass");
-  const layerCells = new Map<string, Uint8Array>();
+  let buildingCells: Uint8Array | undefined;
   for (const { layer, material, kind } of layerMaterials) {
+    const layerFeatures = featuresByLayer.get(layer);
+    if (!layerFeatures?.length) continue;
     context.clearRect(0, 0, width, height);
     context.fillStyle = "#ffffff";
     context.strokeStyle = "#ffffff";
-    if (layer === "roads") {
-      context.lineWidth = Math.max(1, (map.getZoom() - 8) / 4);
+    if (layer === "roads" || layer === "primary-roads") {
+      context.lineWidth = map.getZoom() >= 17.5 ? 1.5 : 1;
     } else if (layer === "rivers") {
-      context.lineWidth = Math.max(1, (map.getZoom() - 7) / 5);
+      context.lineWidth = map.getZoom() >= 18 ? 1.5 : 1;
     } else {
       context.lineWidth = 1;
     }
-    for (const feature of featuresByLayer.get(layer) ?? []) {
+    for (const feature of layerFeatures) {
       drawGeometry(context, feature.geometry as MapGeometry, map, cellSize, kind);
     }
     const mask = context.getImageData(0, 0, width, height).data;
-    const occupied = new Uint8Array(width * height);
+    const occupied = layer === "buildings" ? new Uint8Array(width * height) : undefined;
     for (let index = 0; index < materials.length; index += 1) {
       if (mask[index * 4 + 3] >= 128) {
         materials[index] = material;
-        occupied[index] = 1;
+        if (occupied) occupied[index] = 1;
       }
     }
-    layerCells.set(layer, occupied);
+    if (occupied) buildingCells = occupied;
   }
 
   // Open map data often omits an explicit residential polygon at close zooms.
   // Where building footprints form a cluster, infer the paved/constructed
   // surface between them instead of pretending central-city blocks are grass.
-  const buildingCells = layerCells.get("buildings");
   if (buildingCells && map.getZoom() >= 13) {
     const radius = Math.min(7, Math.max(3, Math.round(map.getZoom() - 11)));
     for (let y = 0; y < height; y += 1) {
@@ -282,7 +294,7 @@ function renderMinecraftCells(
     }
   }
 
-  // Sample the DEM that MapLibre has loaded for the current view. Minecraft's
+  // Sample cached DEM tiles for the current view. Minecraft's
   // four map shades are chosen from the elevation change toward the north, so
   // hills form irregular bands instead of vector-style feature outlines.
   const elevations = new Float32Array(width * height);
@@ -295,7 +307,7 @@ function renderMinecraftCells(
     // DEM lookups are sampled on a small grid and interpolated. That mirrors
     // the coarse elevation averaging used by zoomed Minecraft maps and keeps
     // panning responsive even on a large display.
-    const step = 4;
+    const step = 6;
     const sampleWidth = Math.ceil(width / step) + 1;
     const sampleHeight = Math.ceil(height / step) + 1;
     const samples = new Float32Array(sampleWidth * sampleHeight);
@@ -376,10 +388,10 @@ function renderMinecraftCells(
         }
       }
 
-      const color = mapPalettes[material][shade];
-      materialPixels[index * 4] = Number.parseInt(color.slice(1, 3), 16);
-      materialPixels[index * 4 + 1] = Number.parseInt(color.slice(3, 5), 16);
-      materialPixels[index * 4 + 2] = Number.parseInt(color.slice(5, 7), 16);
+      const [red, green, blue] = mapPaletteRgb[material][shade];
+      materialPixels[index * 4] = red;
+      materialPixels[index * 4 + 1] = green;
+      materialPixels[index * 4 + 2] = blue;
       materialPixels[index * 4 + 3] = 255;
     }
   }
@@ -406,14 +418,14 @@ const minecraftStyle: maplibregl.StyleSpecification = {
     },
   },
   layers: [
-    { id: "earth", type: "background", paint: { "background-color": "#5b873d" } },
+    { id: "earth", type: "background", paint: { "background-color": "#6d9930" } },
     {
       id: "farmland",
       type: "fill",
       source: "world",
       "source-layer": "landuse",
       filter: ["in", ["get", "class"], ["literal", ["agriculture", "farmland", "farm", "orchard", "vineyard"]]],
-      paint: { "fill-color": "#829346", "fill-opacity": 0.92, "fill-antialias": false },
+      paint: { "fill-color": "#825e42", "fill-opacity": 1, "fill-antialias": false },
     },
     {
       id: "built-land",
@@ -421,7 +433,7 @@ const minecraftStyle: maplibregl.StyleSpecification = {
       source: "world",
       "source-layer": "landuse",
       filter: ["in", ["get", "class"], ["literal", ["residential", "commercial", "industrial"]]],
-      paint: { "fill-color": "#8f7961", "fill-opacity": 0.88, "fill-antialias": false },
+      paint: { "fill-color": "#8d909e", "fill-opacity": 1, "fill-antialias": false },
     },
     {
       id: "grass",
@@ -429,7 +441,7 @@ const minecraftStyle: maplibregl.StyleSpecification = {
       source: "world",
       "source-layer": "landcover",
       filter: ["==", ["get", "class"], "grass"],
-      paint: { "fill-color": "#64923f", "fill-antialias": false },
+      paint: { "fill-color": "#6d9930", "fill-antialias": false },
     },
     {
       id: "scrub",
@@ -445,7 +457,7 @@ const minecraftStyle: maplibregl.StyleSpecification = {
       source: "world",
       "source-layer": "landcover",
       filter: ["==", ["get", "class"], "wood"],
-      paint: { "fill-color": "#2f6b2f", "fill-opacity": 0.97, "fill-antialias": false },
+      paint: { "fill-color": "#006b00", "fill-opacity": 1, "fill-antialias": false },
     },
     {
       id: "sand",
@@ -453,7 +465,7 @@ const minecraftStyle: maplibregl.StyleSpecification = {
       source: "world",
       "source-layer": "landcover",
       filter: ["==", ["get", "class"], "sand"],
-      paint: { "fill-color": "#ded29a", "fill-antialias": false },
+      paint: { "fill-color": "#d5c98c", "fill-antialias": false },
     },
     {
       id: "rock",
@@ -469,7 +481,7 @@ const minecraftStyle: maplibregl.StyleSpecification = {
       source: "world",
       "source-layer": "landcover",
       filter: ["in", ["get", "class"], ["literal", ["ice", "glacier"]]],
-      paint: { "fill-color": "#e5e8e1", "fill-antialias": false },
+      paint: { "fill-color": "#8989dc", "fill-antialias": false },
     },
     {
       id: "snow",
@@ -484,7 +496,7 @@ const minecraftStyle: maplibregl.StyleSpecification = {
       type: "fill",
       source: "world",
       "source-layer": "park",
-      paint: { "fill-color": "#4b7d35", "fill-opacity": 0.9, "fill-antialias": false },
+      paint: { "fill-color": "#54832c", "fill-opacity": 1, "fill-antialias": false },
     },
     {
       id: "water",
@@ -492,7 +504,7 @@ const minecraftStyle: maplibregl.StyleSpecification = {
       source: "world",
       "source-layer": "water",
       filter: ["!=", ["get", "brunnel"], "tunnel"],
-      paint: { "fill-color": "#354cb8", "fill-antialias": false },
+      paint: { "fill-color": "#3737dc", "fill-antialias": false },
     },
     {
       id: "rivers",
@@ -500,7 +512,7 @@ const minecraftStyle: maplibregl.StyleSpecification = {
       source: "world",
       "source-layer": "waterway",
       paint: {
-        "line-color": "#354cb8",
+        "line-color": "#3737dc",
         "line-width": ["interpolate", ["linear"], ["zoom"], 7, 0.5, 14, 2.5, 18, 8],
       },
     },
@@ -510,12 +522,25 @@ const minecraftStyle: maplibregl.StyleSpecification = {
       source: "world",
       "source-layer": "transportation",
       minzoom: 13,
-      filter: ["in", ["get", "class"], ["literal", ["motorway", "trunk", "primary"]]],
+      filter: ["in", ["get", "class"], ["literal", ["motorway", "trunk"]]],
       layout: { "line-cap": "butt", "line-join": "bevel" },
       paint: {
-        "line-color": "#cdbc82",
-        "line-width": ["interpolate", ["linear"], ["zoom"], 5, 0.4, 12, 1.2, 18, 5],
-        "line-opacity": ["interpolate", ["linear"], ["zoom"], 5, 0.48, 10, 0.8],
+        "line-color": "#606060",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 13, 1, 18, 3],
+        "line-opacity": 1,
+      },
+    },
+    {
+      id: "primary-roads",
+      type: "line",
+      source: "world",
+      "source-layer": "transportation",
+      minzoom: 17,
+      filter: ["==", ["get", "class"], "primary"],
+      layout: { "line-cap": "butt", "line-join": "bevel" },
+      paint: {
+        "line-color": "#606060",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 17, 1, 18, 2],
       },
     },
     {
@@ -524,7 +549,7 @@ const minecraftStyle: maplibregl.StyleSpecification = {
       source: "world",
       "source-layer": "building",
       minzoom: 13,
-      paint: { "fill-color": "#756453", "fill-antialias": false },
+      paint: { "fill-color": "#606060", "fill-antialias": false },
     },
   ],
 };
@@ -555,6 +580,12 @@ export default function MinecraftMap() {
 
     const hashParts = window.location.hash.slice(1).split("/").map(Number);
     const hasSharedView = hashParts.length === 3 && hashParts.every(Number.isFinite);
+    if (hasSharedView) {
+      setPlace({
+        title: "World view",
+        detail: `${hashParts[1].toFixed(4)}, ${hashParts[2].toFixed(4)}`,
+      });
+    }
     const map = new maplibregl.Map({
       container: mapNode.current,
       style: minecraftStyle,
@@ -562,6 +593,7 @@ export default function MinecraftMap() {
       zoom: hasSharedView ? hashParts[0] : 10,
       minZoom: 2,
       maxZoom: 18,
+      pixelRatio: 1,
       attributionControl: false,
       dragRotate: false,
       pitchWithRotate: false,
@@ -570,26 +602,29 @@ export default function MinecraftMap() {
     map.touchZoomRotate.disableRotation();
     map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
     let pixelFrame: number | null = null;
-    let lastPixelRender = 0;
+    let pixelTimer: number | null = null;
     const terrainCache: TerrainShadeCache = { key: "", values: null };
     const terrainTiles: TerrainTileCache = new Map();
-    const renderPixels = () => {
-      if (pixelFrame !== null) return;
-      pixelFrame = window.requestAnimationFrame((time) => {
-        pixelFrame = null;
-        if (time - lastPixelRender < 160) return;
-        lastPixelRender = time;
-        const target = pixelCanvasRef.current;
-        if (!target) return;
-        try {
-          renderMinecraftCells(map, target, terrainCache, terrainTiles, renderPixels);
-        } catch {
-          target.hidden = true;
-          map.getCanvas().classList.add("pixel-fallback");
-        }
-      });
+    mapNode.current.classList.add("map-moving");
+    const renderPixels = (delay = 80) => {
+      if (pixelTimer !== null) window.clearTimeout(pixelTimer);
+      pixelTimer = window.setTimeout(() => {
+        pixelTimer = null;
+        if (map.isMoving() || pixelFrame !== null) return;
+        pixelFrame = window.requestAnimationFrame(() => {
+          pixelFrame = null;
+          const target = pixelCanvasRef.current;
+          if (!target) return;
+          try {
+            renderMinecraftCells(map, target, terrainCache, terrainTiles, () => renderPixels(100));
+            mapNode.current?.classList.remove("map-moving");
+          } catch {
+            target.hidden = true;
+            map.getCanvas().classList.add("pixel-fallback");
+          }
+        });
+      }, delay);
     };
-    map.on("render", renderPixels);
     const loadingTimeout = window.setTimeout(() => setReady(true), 10000);
     map.on("load", () => {
       window.clearTimeout(loadingTimeout);
@@ -597,6 +632,13 @@ export default function MinecraftMap() {
       setCoordinates({ lng: center.lng, lat: center.lat });
       setZoom(Math.round(map.getZoom()));
       setReady(true);
+      renderPixels(0);
+    });
+    map.on("idle", () => renderPixels(0));
+    map.on("movestart", () => {
+      mapNode.current?.classList.add("map-moving");
+      if (pixelTimer !== null) window.clearTimeout(pixelTimer);
+      pixelTimer = null;
     });
     map.on("move", () => {
       const center = map.getCenter();
@@ -610,6 +652,8 @@ export default function MinecraftMap() {
         "",
         `#${map.getZoom().toFixed(1)}/${center.lat.toFixed(4)}/${center.lng.toFixed(4)}`,
       );
+      terrainCache.key = "";
+      renderPixels(40);
     });
     map.on("click", (event) => {
       markerRef.current?.remove();
@@ -627,6 +671,7 @@ export default function MinecraftMap() {
 
     return () => {
       window.clearTimeout(loadingTimeout);
+      if (pixelTimer !== null) window.clearTimeout(pixelTimer);
       if (pixelFrame !== null) window.cancelAnimationFrame(pixelFrame);
       map.remove();
       mapRef.current = null;
