@@ -45,6 +45,14 @@ type TerrainTile = {
 
 type TerrainTileCache = Map<string, TerrainTile>;
 
+type MinecraftViewCache = {
+  canvas: HTMLCanvasElement | null;
+  center: [number, number];
+  zoom: number;
+  paddingCells: number;
+  renderedAt: number;
+};
+
 type NavigationDestination = {
   title: string;
   center: [number, number];
@@ -248,6 +256,11 @@ function minecraftCellSize() {
   return 4;
 }
 
+function mapViewportOverscan(map: MapLibreMap) {
+  const frameWidth = map.getContainer().parentElement?.clientWidth ?? map.getCanvas().clientWidth;
+  return Math.max(0, Math.round((map.getCanvas().clientWidth - frameWidth) / 2));
+}
+
 function cellNoise(x: number, y: number, salt = 0) {
   let value = Math.imul(x, 374761393) + Math.imul(y, 668265263) + Math.imul(salt, 1442695041);
   value = Math.imul(value ^ (value >>> 13), 1274126177);
@@ -309,6 +322,7 @@ function renderMinecraftCells(
   target: HTMLCanvasElement,
   terrainCache: TerrainShadeCache,
   terrainTiles: TerrainTileCache,
+  viewCache: MinecraftViewCache,
   onTerrainReady: () => void,
 ) {
   const source = map.getCanvas();
@@ -317,12 +331,15 @@ function renderMinecraftCells(
   const cellSize = minecraftCellSize();
   const width = Math.max(1, Math.ceil(source.clientWidth / cellSize));
   const height = Math.max(1, Math.ceil(source.clientHeight / cellSize));
-  // The same bitmap hosts the cheap moving preview. Reset it before the
-  // semantic pass so mask reads always happen on a clean canvas.
-  target.width = width;
-  target.height = height;
+  const paddingCells = Math.max(
+    0,
+    Math.floor((source.clientWidth - target.clientWidth) / (cellSize * 2)),
+  );
+  const renderTarget = document.createElement("canvas");
+  renderTarget.width = width;
+  renderTarget.height = height;
 
-  const context = target.getContext("2d", { willReadFrequently: true });
+  const context = renderTarget.getContext("2d", { willReadFrequently: true });
   if (!context) return;
   context.imageSmoothingEnabled = false;
   context.lineCap = "square";
@@ -440,10 +457,10 @@ function renderMinecraftCells(
   const terrainKey = `${map.getZoom().toFixed(3)}/${center.lng.toFixed(5)}/${center.lat.toFixed(5)}/${width}/${height}`;
   if (terrainCache.key === terrainKey && terrainCache.values?.length === elevations.length) {
     elevations.set(terrainCache.values);
-  } else if (!map.isMoving()) {
-    // DEM lookups are sampled on a small grid and interpolated. That mirrors
-    // the coarse elevation averaging used by zoomed Minecraft maps and keeps
-    // panning responsive even on a large display.
+  } else {
+    // DEM lookups are sampled only when the semantic cache refreshes, never
+    // on every animation frame. This preserves terrain shading during GPS
+    // movement while keeping camera motion responsive.
     const step = 6;
     const sampleWidth = Math.ceil(width / step) + 1;
     const sampleHeight = Math.ceil(height / step) + 1;
@@ -561,6 +578,12 @@ function renderMinecraftCells(
     }
   }
   context.putImageData(materialImage, 0, 0);
+  viewCache.canvas = renderTarget;
+  viewCache.center = [center.lng, center.lat];
+  viewCache.zoom = map.getZoom();
+  viewCache.paddingCells = paddingCells;
+  viewCache.renderedAt = performance.now();
+  renderCachedMinecraftPreview(map, target, viewCache);
   target.hidden = false;
 }
 
@@ -569,8 +592,10 @@ function renderMovingPreview(map: MapLibreMap, target: HTMLCanvasElement) {
   if (source.clientWidth === 0 || source.clientHeight === 0) return;
 
   const cellSize = minecraftCellSize();
-  const width = Math.max(1, Math.ceil(source.clientWidth / cellSize));
-  const height = Math.max(1, Math.ceil(source.clientHeight / cellSize));
+  const viewportWidth = target.clientWidth || source.clientWidth;
+  const viewportHeight = target.clientHeight || source.clientHeight;
+  const width = Math.max(1, Math.ceil(viewportWidth / cellSize));
+  const height = Math.max(1, Math.ceil(viewportHeight / cellSize));
   if (target.width !== width) target.width = width;
   if (target.height !== height) target.height = height;
 
@@ -578,8 +603,81 @@ function renderMovingPreview(map: MapLibreMap, target: HTMLCanvasElement) {
   if (!context) return;
   context.imageSmoothingEnabled = false;
   context.clearRect(0, 0, width, height);
-  context.drawImage(source, 0, 0, source.width, source.height, 0, 0, width, height);
+  const sourceScaleX = source.width / source.clientWidth;
+  const sourceScaleY = source.height / source.clientHeight;
+  const cropX = Math.max(0, (source.clientWidth - viewportWidth) / 2) * sourceScaleX;
+  const cropY = Math.max(0, (source.clientHeight - viewportHeight) / 2) * sourceScaleY;
+  context.drawImage(
+    source,
+    cropX,
+    cropY,
+    viewportWidth * sourceScaleX,
+    viewportHeight * sourceScaleY,
+    0,
+    0,
+    width,
+    height,
+  );
   target.hidden = false;
+}
+
+function renderCachedMinecraftPreview(
+  map: MapLibreMap,
+  target: HTMLCanvasElement,
+  cache: MinecraftViewCache,
+) {
+  // Keep a cheap source preview underneath only for newly exposed edge cells.
+  // The opaque semantic cache covers the full viewport during ordinary travel.
+  renderMovingPreview(map, target);
+  if (!cache.canvas) return;
+
+  const context = target.getContext("2d");
+  if (!context) return;
+  const cellSize = minecraftCellSize();
+  const source = map.getCanvas();
+  const viewportOffsetX = Math.max(0, (source.clientWidth - target.clientWidth) / 2);
+  const viewportOffsetY = Math.max(0, (source.clientHeight - target.clientHeight) / 2);
+  const cacheCenter = map.project(cache.center);
+  const scale = 2 ** (map.getZoom() - cache.zoom);
+  const width = cache.canvas.width * scale;
+  const height = cache.canvas.height * scale;
+  const left = (cacheCenter.x - viewportOffsetX) / cellSize - width / 2;
+  const top = (cacheCenter.y - viewportOffsetY) / cellSize - height / 2;
+  context.imageSmoothingEnabled = false;
+  context.drawImage(cache.canvas, left, top, width, height);
+  target.hidden = false;
+}
+
+function minecraftCacheNeedsRefresh(
+  map: MapLibreMap,
+  target: HTMLCanvasElement,
+  cache: MinecraftViewCache,
+) {
+  if (!cache.canvas) return true;
+  const cellSize = minecraftCellSize();
+  const source = map.getCanvas();
+  const viewportWidth = Math.max(1, Math.ceil(target.clientWidth / cellSize));
+  const viewportHeight = Math.max(1, Math.ceil(target.clientHeight / cellSize));
+  const viewportOffsetX = Math.max(0, (source.clientWidth - target.clientWidth) / 2);
+  const viewportOffsetY = Math.max(0, (source.clientHeight - target.clientHeight) / 2);
+  const scale = 2 ** (map.getZoom() - cache.zoom);
+  if (Math.abs(map.getZoom() - cache.zoom) > 0.25) return true;
+
+  const cacheCenter = map.project(cache.center);
+  const cacheWidth = cache.canvas.width * scale;
+  const cacheHeight = cache.canvas.height * scale;
+  const left = (cacheCenter.x - viewportOffsetX) / cellSize - cacheWidth / 2;
+  const top = (cacheCenter.y - viewportOffsetY) / cellSize - cacheHeight / 2;
+  const right = left + cacheWidth;
+  const bottom = top + cacheHeight;
+  const minimumBuffer = Math.max(6, cache.paddingCells * scale * 0.4);
+  if (map.isMoving() && performance.now() - cache.renderedAt > 900) return true;
+  return (
+    -left < minimumBuffer ||
+    -top < minimumBuffer ||
+    right - viewportWidth < minimumBuffer ||
+    bottom - viewportHeight < minimumBuffer
+  );
 }
 
 function renderNavigationRoute(
@@ -589,8 +687,12 @@ function renderNavigationRoute(
 ) {
   const source = map.getCanvas();
   const cellSize = minecraftCellSize();
-  const width = Math.max(1, Math.ceil(source.clientWidth / cellSize));
-  const height = Math.max(1, Math.ceil(source.clientHeight / cellSize));
+  const viewportWidth = target.clientWidth || source.clientWidth;
+  const viewportHeight = target.clientHeight || source.clientHeight;
+  const viewportOffsetX = Math.max(0, (source.clientWidth - viewportWidth) / 2);
+  const viewportOffsetY = Math.max(0, (source.clientHeight - viewportHeight) / 2);
+  const width = Math.max(1, Math.ceil(viewportWidth / cellSize));
+  const height = Math.max(1, Math.ceil(viewportHeight / cellSize));
   if (target.width !== width) target.width = width;
   if (target.height !== height) target.height = height;
 
@@ -605,8 +707,8 @@ function renderNavigationRoute(
   context.beginPath();
   for (let index = 0; index < coordinates.length; index += 1) {
     const point = map.project(coordinates[index]);
-    const x = point.x / cellSize;
-    const y = point.y / cellSize;
+    const x = (point.x - viewportOffsetX) / cellSize;
+    const y = (point.y - viewportOffsetY) / cellSize;
     if (index === 0) context.moveTo(x, y);
     else context.lineTo(x, y);
   }
@@ -987,30 +1089,53 @@ export default function MinecraftMap() {
     let pixelFrame: number | null = null;
     let previewFrame: number | null = null;
     let pixelTimer: number | null = null;
+    let movingDetailTimer: number | null = null;
+    let lastMovingDetailAt = 0;
     const terrainCache: TerrainShadeCache = { key: "", values: null };
     const terrainTiles: TerrainTileCache = new Map();
+    const viewCache: MinecraftViewCache = {
+      canvas: null,
+      center: [-74.006, 40.7128],
+      zoom: 10,
+      paddingCells: 0,
+      renderedAt: 0,
+    };
     mapNode.current.classList.add("map-moving");
+    const renderSemanticFrame = () => {
+      if (pixelFrame !== null) return;
+      pixelFrame = window.requestAnimationFrame(() => {
+        pixelFrame = null;
+        const target = pixelCanvasRef.current;
+        if (!target) return;
+        try {
+          renderMinecraftCells(map, target, terrainCache, terrainTiles, viewCache, () => renderPixels(100));
+          const routeTarget = routeCanvasRef.current;
+          if (routeTarget) renderNavigationRoute(map, routeTarget, routeCoordinatesRef.current);
+          mapNode.current?.classList.remove("map-moving");
+        } catch {
+          renderCachedMinecraftPreview(map, target, viewCache);
+          const routeTarget = routeCanvasRef.current;
+          if (routeTarget) renderNavigationRoute(map, routeTarget, routeCoordinatesRef.current);
+          mapNode.current?.classList.remove("map-moving");
+        }
+      });
+    };
     const renderPixels = (delay = 80) => {
       if (pixelTimer !== null) window.clearTimeout(pixelTimer);
       pixelTimer = window.setTimeout(() => {
         pixelTimer = null;
         if (map.isMoving() || pixelFrame !== null) return;
-        pixelFrame = window.requestAnimationFrame(() => {
-          pixelFrame = null;
-          const target = pixelCanvasRef.current;
-          if (!target) return;
-          try {
-            renderMinecraftCells(map, target, terrainCache, terrainTiles, () => renderPixels(100));
-            const routeTarget = routeCanvasRef.current;
-            if (routeTarget) renderNavigationRoute(map, routeTarget, routeCoordinatesRef.current);
-            mapNode.current?.classList.remove("map-moving");
-          } catch {
-            renderMovingPreview(map, target);
-            const routeTarget = routeCanvasRef.current;
-            if (routeTarget) renderNavigationRoute(map, routeTarget, routeCoordinatesRef.current);
-            mapNode.current?.classList.remove("map-moving");
-          }
-        });
+        renderSemanticFrame();
+      }, delay);
+    };
+    const renderMovingDetail = () => {
+      if (movingDetailTimer !== null || pixelFrame !== null) return;
+      const delay = Math.max(40, 280 - (performance.now() - lastMovingDetailAt));
+      movingDetailTimer = window.setTimeout(() => {
+        movingDetailTimer = null;
+        if (!map.isMoving() || pixelFrame !== null) return;
+        lastMovingDetailAt = performance.now();
+        renderSemanticFrame();
       }, delay);
     };
     const renderPreview = () => {
@@ -1018,7 +1143,10 @@ export default function MinecraftMap() {
       previewFrame = window.requestAnimationFrame(() => {
         previewFrame = null;
         const target = pixelCanvasRef.current;
-        if (target) renderMovingPreview(map, target);
+        if (target) {
+          renderCachedMinecraftPreview(map, target, viewCache);
+          if (minecraftCacheNeedsRefresh(map, target, viewCache)) renderMovingDetail();
+        }
         const routeTarget = routeCanvasRef.current;
         if (routeTarget) renderNavigationRoute(map, routeTarget, routeCoordinatesRef.current);
       });
@@ -1039,6 +1167,8 @@ export default function MinecraftMap() {
       mapNode.current?.classList.add("map-moving");
       if (pixelTimer !== null) window.clearTimeout(pixelTimer);
       pixelTimer = null;
+      if (movingDetailTimer !== null) window.clearTimeout(movingDetailTimer);
+      movingDetailTimer = null;
       renderPreview();
     });
     map.on("render", () => {
@@ -1112,6 +1242,7 @@ export default function MinecraftMap() {
     return () => {
       window.clearTimeout(loadingTimeout);
       if (pixelTimer !== null) window.clearTimeout(pixelTimer);
+      if (movingDetailTimer !== null) window.clearTimeout(movingDetailTimer);
       if (pixelFrame !== null) window.cancelAnimationFrame(pixelFrame);
       if (previewFrame !== null) window.cancelAnimationFrame(previewFrame);
       if (locationWatchRef.current !== null && navigator.geolocation) {
@@ -1270,13 +1401,27 @@ export default function MinecraftMap() {
     const resultCenter: [number, number] = [Number(result.lon), Number(result.lat)];
     if (navigationOpenRef.current) {
       selectNavigationDestination(nameParts[0], resultCenter);
-      mapRef.current?.fitBounds([[west, south], [east, north]], { padding: 90, maxZoom: 15, duration: 900 });
+      const map = mapRef.current;
+      if (map) {
+        map.fitBounds([[west, south], [east, north]], {
+          padding: 90 + mapViewportOverscan(map),
+          maxZoom: 15,
+          duration: 900,
+        });
+      }
       setQuery(result.display_name);
       setResults([]);
       return;
     }
     setLocationFollowing(false);
-    mapRef.current?.fitBounds([[west, south], [east, north]], { padding: 90, maxZoom: 14, duration: 1300 });
+    const map = mapRef.current;
+    if (map) {
+      map.fitBounds([[west, south], [east, north]], {
+        padding: 90 + mapViewportOverscan(map),
+        maxZoom: 14,
+        duration: 1300,
+      });
+    }
     markerRef.current?.remove();
     const markerNode = document.createElement("div");
     markerNode.className = "pixel-marker";
@@ -1506,8 +1651,14 @@ export default function MinecraftMap() {
           (current, coordinate) => current.extend(coordinate),
           new maplibregl.LngLatBounds(route.geometry.coordinates[0], route.geometry.coordinates[0]),
         );
+        const overscan = mapViewportOverscan(map);
         map.fitBounds(bounds, {
-          padding: { top: 70, right: 70, bottom: 90, left: window.innerWidth > 720 ? 360 : 70 },
+          padding: {
+            top: 70 + overscan,
+            right: 70 + overscan,
+            bottom: 90 + overscan,
+            left: (window.innerWidth > 720 ? 360 : 70) + overscan,
+          },
           maxZoom: 16,
           duration: 900,
         });
