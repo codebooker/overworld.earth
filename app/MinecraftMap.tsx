@@ -2121,13 +2121,24 @@ export default function MinecraftMap() {
     navigationPositionHandlerRef.current = handleNavigationPosition;
   });
 
-  const recenterNavigation = () => {
+  const toggleNavigationFollowing = () => {
     const map = mapRef.current;
     const marker = userMarkerRef.current;
     if (!map || !marker) {
       locateMe();
       return;
     }
+
+    if (followingLocationRef.current) {
+      setLocationFollowing(false);
+      map.stop();
+      if (Math.abs(map.getBearing()) > 0.1) {
+        map.easeTo({ bearing: 0, duration: 450, essential: true });
+      }
+      setMessage("Camera follow paused. GPS and navigation are still running.");
+      return;
+    }
+
     setLocationFollowing(true);
     const routeBearing = routeBearingAt(routeCoordinatesRef.current, routeProgressIndexRef.current);
     const bearing = routeTrackingRef.current
@@ -2352,15 +2363,16 @@ export default function MinecraftMap() {
                 <div className="route-controls">
                   <button
                     className={followingLocation ? "enabled" : ""}
-                    onClick={recenterNavigation}
+                    onClick={toggleNavigationFollowing}
                     aria-pressed={followingLocation}
+                    aria-label={followingLocation ? "Pause heading-up camera follow" : "Recenter and resume camera follow"}
                     title={
                       followingLocation &&
                       navigationStatus !== "preview" &&
                       navigationStatus !== "arrived"
-                        ? "Heading-up GPS follow is active"
+                        ? "Pause heading-up GPS follow"
                         : followingLocation
-                          ? "Live GPS follow is active"
+                          ? "Pause live GPS follow"
                           : "Recenter and follow your GPS position"
                     }
                   >
