@@ -13,6 +13,188 @@ type SearchResult = {
   type: string;
 };
 
+type Material =
+  | "grass"
+  | "farmland"
+  | "built"
+  | "forest"
+  | "sand"
+  | "ice"
+  | "park"
+  | "water"
+  | "road"
+  | "building";
+
+type MapGeometry = {
+  type: string;
+  coordinates: unknown;
+};
+
+// Java Edition map colors use one base color at four fixed brightness levels.
+// Keeping those shades explicit is important: every output cell is a map-color
+// block, never a blurred or averaged pixel from the vector map underneath.
+const mapPalettes: Record<Material, readonly [string, string, string, string]> = {
+  grass: ["#597d27", "#6d9930", "#7fb238", "#435e1d"],
+  farmland: ["#6a4c36", "#825e42", "#976d4d", "#4f3928"],
+  built: ["#73757f", "#8d909e", "#a4a8b8", "#565861"],
+  forest: ["#005700", "#006b00", "#007c00", "#004100"],
+  sand: ["#aea473", "#d5c98c", "#f7e9a3", "#827b56"],
+  ice: ["#7070b3", "#8989dc", "#a0a0ff", "#545487"],
+  park: ["#456b24", "#54832c", "#629933", "#334f1b"],
+  water: ["#2d2db4", "#3737dc", "#4040ff", "#222287"],
+  road: ["#4e4e4e", "#606060", "#707070", "#3b3b3b"],
+  building: ["#4e4e4e", "#606060", "#707070", "#3b3b3b"],
+};
+
+const layerMaterials: ReadonlyArray<{ layer: string; material: Material; kind: "fill" | "line" }> = [
+  { layer: "farmland", material: "farmland", kind: "fill" },
+  { layer: "built-land", material: "built", kind: "fill" },
+  { layer: "grass", material: "grass", kind: "fill" },
+  { layer: "wood", material: "forest", kind: "fill" },
+  { layer: "sand", material: "sand", kind: "fill" },
+  { layer: "ice", material: "ice", kind: "fill" },
+  { layer: "parks", material: "park", kind: "fill" },
+  { layer: "water", material: "water", kind: "fill" },
+  { layer: "rivers", material: "water", kind: "line" },
+  { layer: "roads", material: "road", kind: "line" },
+  { layer: "buildings", material: "building", kind: "fill" },
+];
+
+function drawGeometry(
+  context: CanvasRenderingContext2D,
+  geometry: MapGeometry,
+  map: MapLibreMap,
+  cellSize: number,
+  kind: "fill" | "line",
+) {
+  const project = (position: unknown) => {
+    if (!Array.isArray(position) || position.length < 2) return null;
+    const lng = Number(position[0]);
+    const lat = Number(position[1]);
+    if (!Number.isFinite(lng) || !Number.isFinite(lat)) return null;
+    const point = map.project([lng, lat]);
+    return { x: point.x / cellSize, y: point.y / cellSize };
+  };
+
+  const traceLine = (line: unknown) => {
+    if (!Array.isArray(line)) return;
+    let started = false;
+    for (const position of line) {
+      const point = project(position);
+      if (!point) continue;
+      if (!started) {
+        context.moveTo(point.x, point.y);
+        started = true;
+      } else {
+        context.lineTo(point.x, point.y);
+      }
+    }
+  };
+
+  context.beginPath();
+  switch (geometry.type) {
+    case "Polygon":
+      if (Array.isArray(geometry.coordinates)) geometry.coordinates.forEach(traceLine);
+      break;
+    case "MultiPolygon":
+      if (Array.isArray(geometry.coordinates)) {
+        geometry.coordinates.forEach((polygon) => {
+          if (Array.isArray(polygon)) polygon.forEach(traceLine);
+        });
+      }
+      break;
+    case "LineString":
+      traceLine(geometry.coordinates);
+      break;
+    case "MultiLineString":
+      if (Array.isArray(geometry.coordinates)) geometry.coordinates.forEach(traceLine);
+      break;
+    default:
+      return;
+  }
+
+  if (kind === "fill") context.fill("evenodd");
+  else context.stroke();
+}
+
+function renderMinecraftCells(map: MapLibreMap, target: HTMLCanvasElement) {
+  const source = map.getCanvas();
+  if (!map.isStyleLoaded() || source.clientWidth === 0 || source.clientHeight === 0) return;
+
+  const cellSize = window.innerWidth < 720 ? 4 : 4;
+  const width = Math.max(1, Math.ceil(source.clientWidth / cellSize));
+  const height = Math.max(1, Math.ceil(source.clientHeight / cellSize));
+  if (target.width !== width) target.width = width;
+  if (target.height !== height) target.height = height;
+
+  const context = target.getContext("2d", { willReadFrequently: true });
+  if (!context) return;
+  context.imageSmoothingEnabled = false;
+  context.lineCap = "square";
+  context.lineJoin = "miter";
+
+  const visibleLayers = layerMaterials.map(({ layer }) => layer);
+  const features = map.queryRenderedFeatures(undefined, { layers: visibleLayers });
+  const featuresByLayer = new Map<string, typeof features>();
+  for (const feature of features) {
+    const layerFeatures = featuresByLayer.get(feature.layer.id) ?? [];
+    layerFeatures.push(feature);
+    featuresByLayer.set(feature.layer.id, layerFeatures);
+  }
+
+  const materials = new Array<Material>(width * height).fill("grass");
+  for (const { layer, material, kind } of layerMaterials) {
+    context.clearRect(0, 0, width, height);
+    context.fillStyle = "#ffffff";
+    context.strokeStyle = "#ffffff";
+    if (layer === "roads") {
+      context.lineWidth = Math.max(1, (map.getZoom() - 8) / 4);
+    } else if (layer === "rivers") {
+      context.lineWidth = Math.max(1, (map.getZoom() - 7) / 5);
+    } else {
+      context.lineWidth = 1;
+    }
+    for (const feature of featuresByLayer.get(layer) ?? []) {
+      drawGeometry(context, feature.geometry as MapGeometry, map, cellSize, kind);
+    }
+    const mask = context.getImageData(0, 0, width, height).data;
+    for (let index = 0; index < materials.length; index += 1) {
+      if (mask[index * 4 + 3] >= 128) materials[index] = material;
+    }
+  }
+
+  // Convert the semantic material grid to the same four brightness bands used
+  // by Minecraft maps. Edges get north/south-facing shades, while sparse,
+  // geographically anchored shade cells keep large areas from looking flat.
+  const materialImage = context.createImageData(width, height);
+  const materialPixels = materialImage.data;
+  const anchor = map.project([0, 0]);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x;
+      const material = materials[index];
+      const north = y > 0 ? materials[index - width] : material;
+      const south = y < height - 1 ? materials[index + width] : material;
+      const worldX = Math.floor((x * cellSize - anchor.x) / cellSize);
+      const worldY = Math.floor((y * cellSize - anchor.y) / cellSize);
+      const hash = Math.abs((Math.floor(worldX / 3) * 73428767) ^ (Math.floor(worldY / 3) * 912931));
+      let shade = 1;
+      if (north !== material) shade = 2;
+      else if (south !== material) shade = 0;
+      else if (hash % 89 === 0) shade = 2;
+      else if (hash % 113 === 0) shade = 0;
+
+      const color = mapPalettes[material][shade];
+      materialPixels[index * 4] = Number.parseInt(color.slice(1, 3), 16);
+      materialPixels[index * 4 + 1] = Number.parseInt(color.slice(3, 5), 16);
+      materialPixels[index * 4 + 2] = Number.parseInt(color.slice(5, 7), 16);
+      materialPixels[index * 4 + 3] = 255;
+    }
+  }
+  context.putImageData(materialImage, 0, 0);
+  target.hidden = false;
+}
+
 const destinations = [
   { label: "New York", center: [-74.006, 40.7128] as [number, number], zoom: 10 },
   { label: "The Alps", center: [10.1, 46.5] as [number, number], zoom: 7 },
@@ -111,7 +293,7 @@ const minecraftStyle: maplibregl.StyleSpecification = {
       type: "line",
       source: "world",
       "source-layer": "transportation",
-      filter: ["in", ["get", "class"], ["literal", ["motorway", "trunk", "primary", "secondary", "tertiary"]]],
+      filter: ["in", ["get", "class"], ["literal", ["motorway", "trunk", "primary"]]],
       layout: { "line-cap": "butt", "line-join": "bevel" },
       paint: {
         "line-color": "#cdbc82",
@@ -171,53 +353,20 @@ export default function MinecraftMap() {
     map.touchZoomRotate.disableRotation();
     map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
     let pixelFrame: number | null = null;
+    let lastPixelRender = 0;
     const renderPixels = () => {
       if (pixelFrame !== null) return;
-      pixelFrame = window.requestAnimationFrame(() => {
+      pixelFrame = window.requestAnimationFrame((time) => {
         pixelFrame = null;
-        const source = map.getCanvas();
+        if (time - lastPixelRender < 70) return;
+        lastPixelRender = time;
         const target = pixelCanvasRef.current;
-        if (!target || source.clientWidth === 0 || source.clientHeight === 0) return;
-
-        // A filled Minecraft map is a deliberately tiny raster. Sample the
-        // real vector map at roughly one cell per five CSS pixels, then enlarge
-        // with nearest-neighbour rendering so every shoreline and road becomes
-        // a real square step instead of a smooth line under a decorative grid.
-        const cellSize = window.innerWidth < 720 ? 4 : 5;
-        const width = Math.max(1, Math.round(source.clientWidth / cellSize));
-        const height = Math.max(1, Math.round(source.clientHeight / cellSize));
-        if (target.width !== width) target.width = width;
-        if (target.height !== height) target.height = height;
-
-        const context = target.getContext("2d", { willReadFrequently: true });
-        if (!context) return;
-        context.imageSmoothingEnabled = false;
-
+        if (!target) return;
         try {
-          context.drawImage(source, 0, 0, source.width, source.height, 0, 0, width, height);
-          const image = context.getImageData(0, 0, width, height);
-          const pixels = image.data;
-
-          for (let y = 0; y < height; y += 1) {
-            for (let x = 0; x < width; x += 1) {
-              const offset = (y * width + x) * 4;
-              const hash = (x * 17 + y * 31 + (x * y) % 13) & 31;
-              const shade = hash === 0 ? 0.78 : hash < 4 ? 0.9 : hash === 31 ? 1.1 : 1;
-
-              // Minecraft map colors are selected from a small palette with a
-              // handful of brightness bands. Quantizing here creates the same
-              // mottled blocks without inventing terrain that is not present.
-              pixels[offset] = Math.min(255, Math.round((pixels[offset] * shade) / 16) * 16);
-              pixels[offset + 1] = Math.min(255, Math.round((pixels[offset + 1] * shade) / 16) * 16);
-              pixels[offset + 2] = Math.min(255, Math.round((pixels[offset + 2] * shade) / 16) * 16);
-            }
-          }
-
-          context.putImageData(image, 0, 0);
-          target.hidden = false;
+          renderMinecraftCells(map, target);
         } catch {
           target.hidden = true;
-          source.classList.add("pixel-fallback");
+          map.getCanvas().classList.add("pixel-fallback");
         }
       });
     };
