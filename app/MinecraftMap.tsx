@@ -251,6 +251,25 @@ function cellNoise(x: number, y: number, salt = 0) {
   return (value ^ (value >>> 16)) >>> 0;
 }
 
+function smoothCellNoise(x: number, y: number, scale: number, salt: number) {
+  const scaledX = x / scale;
+  const scaledY = y / scale;
+  const x0 = Math.floor(scaledX);
+  const y0 = Math.floor(scaledY);
+  const tx = scaledX - x0;
+  const ty = scaledY - y0;
+  const smoothX = tx * tx * (3 - 2 * tx);
+  const smoothY = ty * ty * (3 - 2 * ty);
+  const sample = (sampleX: number, sampleY: number) => cellNoise(sampleX, sampleY, salt) / 0xffffffff;
+  const northwest = sample(x0, y0);
+  const northeast = sample(x0 + 1, y0);
+  const southwest = sample(x0, y0 + 1);
+  const southeast = sample(x0 + 1, y0 + 1);
+  const north = northwest + (northeast - northwest) * smoothX;
+  const south = southwest + (southeast - southwest) * smoothX;
+  return north + (south - north) * smoothY;
+}
+
 function distanceFromCells(
   width: number,
   height: number,
@@ -481,24 +500,26 @@ function renderMinecraftCells(
       const worldX = Math.floor((x * cellSize - anchor.x) / cellSize);
       const worldY = Math.floor((y * cellSize - anchor.y) / cellSize);
       const hash = cellNoise(worldX, worldY, 31);
-      const cluster = cellNoise(Math.floor(worldX / 6), Math.floor(worldY / 6), 47);
+      const terrainNoise =
+        smoothCellNoise(worldX, worldY, 11, 47) * 0.7 +
+        smoothCellNoise(worldX, worldY, 4, 71) * 0.3;
       let shade = 1;
       if (material === "water") {
         const depth = waterDepth[index];
         if (depth <= 1) shade = 2;
         else if (depth <= 3) shade = 1;
         else if (depth <= 8) shade = 0;
-        else shade = cluster % 7 === 0 || hash % 31 === 0 ? 3 : 0;
+        else shade = terrainNoise < 0.25 || hash % 31 === 0 ? 3 : 0;
         if (depth > 2 && hash % 23 === 0) shade = shade === 3 ? 0 : 1;
       } else if (material === "forest") {
-        shade = cluster % 5 === 0 || hash % 7 < 2 ? 0 : 1;
+        shade = terrainNoise < 0.34 || hash % 7 < 2 ? 0 : 1;
         if (hash % 29 === 0) shade = 2;
         else if (hash % 41 === 0) shade = 3;
       } else if (material === "scrub") {
-        shade = cluster % 4 === 0 || hash % 8 < 2 ? 0 : 1;
+        shade = terrainNoise < 0.32 || hash % 8 < 2 ? 0 : 1;
         if (hash % 31 === 0) shade = 2;
       } else if (material === "grass" || material === "park") {
-        shade = cluster % 7 === 0 || hash % 11 < 2 ? 0 : 1;
+        shade = terrainNoise < 0.29 || hash % 11 < 2 ? 0 : 1;
         if (hash % 23 === 0) shade = 2;
         else if (hash % 97 === 0) shade = 3;
       } else if (material === "sand") {
