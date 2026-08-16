@@ -1764,7 +1764,14 @@ export default function MinecraftMap() {
                   </small>
                 </div>
                 <div className="route-controls">
-                  <button onClick={recenterNavigation}>{followingLocation ? "FOLLOWING" : "RECENTER"}</button>
+                  <button
+                    className={followingLocation ? "enabled" : ""}
+                    onClick={recenterNavigation}
+                    aria-pressed={followingLocation}
+                    title={followingLocation ? "Live GPS follow is active" : "Recenter and follow your GPS position"}
+                  >
+                    {followingLocation ? "FOLLOWING" : "RECENTER"}
+                  </button>
                   <button className={voiceEnabled ? "enabled" : ""} onClick={toggleNavigationVoice}>
                     {voiceEnabled ? "VOICE ON" : "VOICE OFF"}
                   </button>
