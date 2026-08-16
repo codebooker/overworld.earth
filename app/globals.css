@@ -58,9 +58,9 @@ button { touch-action: manipulation; }
 .map-loading { position: absolute; inset: 0; z-index: 4; display: grid; place-content: center; gap: 12px; color: #f0e6c6; text-align: center; background: #425b35; font-size: 11px; letter-spacing: .12em; }
 .map-loading span { width: 34px; height: 34px; justify-self: center; border: 6px solid #8ca35b; border-right-color: #d3bf78; animation: spin .8s steps(8) infinite; }
 .map-title-card { position: absolute; z-index: 5; top: 22px; left: 22px; width: 232px; padding: 14px 16px 13px; display: flex; flex-direction: column; background: rgba(229,217,180,.94); border: 2px solid #4e442f; box-shadow: inset 0 0 0 2px #f0e6c9, 4px 4px 0 rgba(43,35,22,.55); }
-.map-title-card .eyebrow { color: #6d624c; font-size: 9px; letter-spacing: .16em; }
+.map-title-card .eyebrow { color: #6d624c; font-size: 10px; font-weight: 800; letter-spacing: .14em; }
 .map-title-card strong { margin: 4px 0 3px; font-size: 22px; letter-spacing: .04em; }
-.map-title-card span:last-child { color: #6d624c; font-size: 10px; }
+.map-title-card span:last-child { color: #6d624c; font-size: 11px; font-weight: 700; line-height: 1.3; }
 .zoom-controls { position: absolute; z-index: 5; right: 18px; top: 18px; display: grid; width: 42px; background: #ded2ae; border: 2px solid #453b28; box-shadow: 3px 3px 0 rgba(43,35,22,.55); }
 .zoom-controls button { height: 38px; color: #30291c; background: transparent; border: 0; cursor: pointer; font-size: 22px; }
 .zoom-controls button:hover { background: #c4b58e; }
