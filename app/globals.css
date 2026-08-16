@@ -65,13 +65,13 @@ button { touch-action: manipulation; }
 .zoom-controls button:hover { background: #c4b58e; }
 .zoom-controls span { padding: 5px 0; text-align: center; color: #75684d; border-block: 1px solid #9f906c; font-size: 9px; }
 .map-tools { position: absolute; z-index: 5; right: 18px; top: 145px; display: grid; gap: 8px; }
-.map-tools button { width: 42px; height: 42px; color: #30291c; background: #ded2ae; border: 2px solid #453b28; box-shadow: 3px 3px 0 rgba(43,35,22,.55); cursor: pointer; font-size: 18px; }
+.map-tools button { width: 42px; height: 42px; display: grid; place-items: center; padding: 0; color: #30291c; background: #ded2ae; border: 2px solid #453b28; box-shadow: 3px 3px 0 rgba(43,35,22,.55); cursor: pointer; font-size: 18px; }
 .map-tools button:hover, .map-tools button:focus-visible { background: #c4b58e; outline: 2px solid #f0e5c4; }
 .map-tools button.gps-active { color: #f7e9a3; background: #426b35; box-shadow: inset 0 0 0 2px #6d9930, 3px 3px 0 rgba(43,35,22,.55); }
 .map-tools button.navigation-active { color: #f7e9a3; background: #8f382c; box-shadow: inset 0 0 0 2px #b85b43, 3px 3px 0 rgba(43,35,22,.55); }
-.key-tool-icon { position: relative; display: inline-block; width: 24px; height: 18px; color: currentColor; }
-.key-tool-icon::before { content: ""; position: absolute; left: 0; top: 1px; width: 9px; height: 9px; border: 3px solid currentColor; border-radius: 1px; }
-.key-tool-icon::after { content: ""; position: absolute; left: 11px; top: 6px; width: 13px; height: 10px; background: currentColor; clip-path: polygon(0 0,100% 0,100% 45%,78% 45%,78% 100%,56% 100%,56% 45%,0 45%); }
+.key-tool-icon { position: relative; display: inline-block; width: 30px; height: 25px; color: currentColor; vertical-align: middle; transform: rotate(-35deg); }
+.key-tool-icon::before { content: ""; position: absolute; left: 0; top: 0; width: 17px; height: 17px; border: 4px solid currentColor; border-radius: 50%; }
+.key-tool-icon::after { content: ""; position: absolute; left: 14px; top: 6px; width: 16px; height: 13px; background: currentColor; clip-path: polygon(0 0,100% 0,100% 45%,88% 45%,88% 85%,72% 85%,72% 45%,58% 45%,58% 100%,42% 100%,42% 45%,0 45%); }
 .gps-loading { display: inline-block; width: 15px; height: 15px; border: 3px solid #75684d; border-right-color: transparent; animation: spin .7s steps(8) infinite; }
 .navigation-panel { position: absolute; z-index: 7; top: 20px; left: 20px; width: 310px; max-height: calc(100% - 40px); display: flex; flex-direction: column; padding: 12px; overscroll-behavior: contain; color: #332d23; background: rgba(226,214,178,.97); border: 3px solid #4b402c; box-shadow: inset 0 0 0 2px #f3e7c7, 5px 5px 0 rgba(34,28,18,.58); }
 .navigation-heading { display: flex; align-items: center; justify-content: space-between; padding: 1px 2px 9px; border-bottom: 2px solid #9f906c; font-size: 11px; font-weight: 900; letter-spacing: .13em; }
