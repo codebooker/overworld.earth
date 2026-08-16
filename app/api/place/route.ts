@@ -13,6 +13,11 @@ type NominatimAddress = Partial<
     | "district"
     | "quarter"
     | "neighbourhood"
+    | "subdivision"
+    | "residential"
+    | "locality"
+    | "place"
+    | "farm"
     | "county"
     | "state"
     | "country",
@@ -34,17 +39,22 @@ function coordinate(value: string | null, limit: number) {
 function exploredPlace(result: NominatimReverseResult) {
   const address = result.address ?? {};
   return (
-    address.city ??
-    address.town ??
-    address.village ??
-    address.municipality ??
-    address.hamlet ??
-    address.borough ??
+    address.neighbourhood ??
+    address.quarter ??
     address.suburb ??
+    address.subdivision ??
+    address.residential ??
+    address.locality ??
+    address.borough ??
     address.city_district ??
     address.district ??
-    address.quarter ??
-    address.neighbourhood ??
+    address.town ??
+    address.village ??
+    address.hamlet ??
+    address.city ??
+    address.municipality ??
+    address.place ??
+    address.farm ??
     address.county ??
     address.state ??
     address.country ??

@@ -1177,7 +1177,7 @@ export default function MinecraftMap() {
         placeLookupController = controller;
         lastPlaceLookupAt = performance.now();
         try {
-          const params = new URLSearchParams({ lat: lookup.lat, lon: lookup.lng });
+          const params = new URLSearchParams({ lat: lookup.lat, lon: lookup.lng, v: "2" });
           const response = await fetch(`/api/place?${params}`, { signal: controller.signal });
           if (!response.ok) return;
           const result = (await response.json()) as PlaceLookupResponse;
