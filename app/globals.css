@@ -64,7 +64,7 @@ button { touch-action: manipulation; }
 .zoom-controls { position: absolute; z-index: 5; right: 18px; top: 18px; display: grid; width: 42px; background: #ded2ae; border: 2px solid #453b28; box-shadow: 3px 3px 0 rgba(43,35,22,.55); }
 .zoom-controls button { height: 38px; color: #30291c; background: transparent; border: 0; cursor: pointer; font-size: 22px; }
 .zoom-controls button:hover { background: #c4b58e; }
-.zoom-controls span { padding: 5px 0; text-align: center; color: #75684d; border-block: 1px solid #9f906c; font-size: 9px; }
+.zoom-controls span { padding: 5px 0; text-align: center; color: #75684d; border-block: 1px solid #9f906c; font-size: 11px; font-weight: 800; line-height: 1.2; }
 .map-tools { position: absolute; z-index: 5; right: 18px; top: 145px; display: grid; gap: 8px; }
 .map-tools button { --tool-bg: #ded2ae; width: 42px; height: 42px; display: grid; place-items: center; padding: 0; color: #30291c; background: var(--tool-bg); border: 2px solid #453b28; box-shadow: 3px 3px 0 rgba(43,35,22,.55); cursor: pointer; font-size: 18px; }
 .map-tools button:hover, .map-tools button:focus-visible { --tool-bg: #c4b58e; background: var(--tool-bg); outline: 2px solid #f0e5c4; }
