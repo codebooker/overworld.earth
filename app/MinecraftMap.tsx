@@ -74,7 +74,10 @@ type TerrainTileCache = Map<string, TerrainTile>;
 type MinecraftViewCache = {
   canvas: HTMLCanvasElement | null;
   origin: [number, number];
+  axisX: [number, number];
+  axisY: [number, number];
   zoom: number;
+  bearing: number;
   paddingCells: number;
   renderedAt: number;
 };
@@ -280,19 +283,15 @@ const layerMaterials: ReadonlyArray<{ layer: string; material: Material; kind: "
 function drawGeometry(
   context: CanvasRenderingContext2D,
   geometry: MapGeometry,
-  map: MapLibreMap,
-  cellSize: number,
+  projectPosition: (lng: number, lat: number) => { x: number; y: number },
   kind: "fill" | "line",
-  offsetX = 0,
-  offsetY = 0,
 ) {
   const project = (position: unknown) => {
     if (!Array.isArray(position) || position.length < 2) return null;
     const lng = Number(position[0]);
     const lat = Number(position[1]);
     if (!Number.isFinite(lng) || !Number.isFinite(lat)) return null;
-    const point = map.project([lng, lat]);
-    return { x: point.x / cellSize + offsetX, y: point.y / cellSize + offsetY };
+    return projectPosition(lng, lat);
   };
 
   const traceLine = (line: unknown) => {
@@ -344,21 +343,50 @@ function minecraftWorldGrid(map: MapLibreMap) {
   const cellSize = minecraftCellSize();
   const zoom = map.getZoom();
   const worldSize = 512 * 2 ** zoom;
-  const topLeft = maplibregl.MercatorCoordinate.fromLngLat(map.unproject([0, 0]));
-  const worldCellX = (topLeft.x * worldSize) / cellSize;
-  const worldCellY = (topLeft.y * worldSize) / cellSize;
-  const originCellX = Math.floor(worldCellX);
-  const originCellY = Math.floor(worldCellY);
+  const worldCellScale = worldSize / cellSize;
+  const source = map.getCanvas();
+  const centerMercatorX = maplibregl.MercatorCoordinate.fromLngLat(map.getCenter()).x;
+  const unwrapX = (value: number) => {
+    let unwrapped = value;
+    while (unwrapped - centerMercatorX > 0.5) unwrapped -= 1;
+    while (unwrapped - centerMercatorX < -0.5) unwrapped += 1;
+    return unwrapped;
+  };
+  const corners = [
+    [0, 0],
+    [source.clientWidth, 0],
+    [source.clientWidth, source.clientHeight],
+    [0, source.clientHeight],
+  ].map(([x, y]) => {
+    const coordinate = maplibregl.MercatorCoordinate.fromLngLat(map.unproject([x, y]));
+    return { x: unwrapX(coordinate.x) * worldCellScale, y: coordinate.y * worldCellScale };
+  });
+  const originCellX = Math.floor(Math.min(...corners.map((corner) => corner.x))) - 1;
+  const originCellY = Math.floor(Math.min(...corners.map((corner) => corner.y))) - 1;
+  const maximumCellX = Math.ceil(Math.max(...corners.map((corner) => corner.x))) + 1;
+  const maximumCellY = Math.ceil(Math.max(...corners.map((corner) => corner.y))) + 1;
   const origin = new maplibregl.MercatorCoordinate(
-    (originCellX * cellSize) / worldSize,
-    (originCellY * cellSize) / worldSize,
+    originCellX / worldCellScale,
+    originCellY / worldCellScale,
+  ).toLngLat();
+  const axisX = new maplibregl.MercatorCoordinate(
+    (originCellX + 1) / worldCellScale,
+    originCellY / worldCellScale,
+  ).toLngLat();
+  const axisY = new maplibregl.MercatorCoordinate(
+    originCellX / worldCellScale,
+    (originCellY + 1) / worldCellScale,
   ).toLngLat();
   return {
     origin: [origin.lng, origin.lat] as [number, number],
+    axisX: [axisX.lng, axisX.lat] as [number, number],
+    axisY: [axisY.lng, axisY.lat] as [number, number],
     originCellX,
     originCellY,
-    phaseX: worldCellX - originCellX,
-    phaseY: worldCellY - originCellY,
+    width: Math.max(1, maximumCellX - originCellX),
+    height: Math.max(1, maximumCellY - originCellY),
+    worldCellScale,
+    centerMercatorX,
   };
 }
 
@@ -436,8 +464,8 @@ function renderMinecraftCells(
 
   const cellSize = minecraftCellSize();
   const grid = minecraftWorldGrid(map);
-  const width = Math.max(1, Math.ceil(source.clientWidth / cellSize + grid.phaseX));
-  const height = Math.max(1, Math.ceil(source.clientHeight / cellSize + grid.phaseY));
+  const width = grid.width;
+  const height = grid.height;
   const paddingCells = Math.max(
     0,
     Math.floor((source.clientWidth - target.clientWidth) / (cellSize * 2)),
@@ -462,6 +490,16 @@ function renderMinecraftCells(
   }
 
   const materials = new Array<Material>(width * height).fill("grass");
+  const projectToGrid = (lng: number, lat: number) => {
+    const coordinate = maplibregl.MercatorCoordinate.fromLngLat([lng, lat]);
+    let mercatorX = coordinate.x;
+    while (mercatorX - grid.centerMercatorX > 0.5) mercatorX -= 1;
+    while (mercatorX - grid.centerMercatorX < -0.5) mercatorX += 1;
+    return {
+      x: mercatorX * grid.worldCellScale - grid.originCellX,
+      y: coordinate.y * grid.worldCellScale - grid.originCellY,
+    };
+  };
   let buildingCells: Uint8Array | undefined;
   for (const { layer, material, kind } of layerMaterials) {
     const layerFeatures = featuresByLayer.get(layer);
@@ -477,15 +515,7 @@ function renderMinecraftCells(
       context.lineWidth = 1;
     }
     for (const feature of layerFeatures) {
-      drawGeometry(
-        context,
-        feature.geometry as MapGeometry,
-        map,
-        cellSize,
-        kind,
-        grid.phaseX,
-        grid.phaseY,
-      );
+      drawGeometry(context, feature.geometry as MapGeometry, projectToGrid, kind);
     }
     const mask = context.getImageData(0, 0, width, height).data;
     const occupied = layer === "buildings" ? new Uint8Array(width * height) : undefined;
@@ -584,10 +614,10 @@ function renderMinecraftCells(
       for (let sx = 0; sx < sampleWidth; sx += 1) {
         const x = Math.min(width - 1, sx * step);
         const y = Math.min(height - 1, sy * step);
-        const location = map.unproject([
-          (x + 0.5 - grid.phaseX) * cellSize,
-          (y + 0.5 - grid.phaseY) * cellSize,
-        ]);
+        const location = new maplibregl.MercatorCoordinate(
+          (grid.originCellX + x + 0.5) / grid.worldCellScale,
+          (grid.originCellY + y + 0.5) / grid.worldCellScale,
+        ).toLngLat();
         const terrainZoom = Math.min(12, Math.max(2, Math.floor(map.getZoom())));
         const elevation = terrainElevationAt(location.lng, location.lat, terrainZoom, terrainTiles, onTerrainReady);
         if (elevation != null) {
@@ -696,7 +726,10 @@ function renderMinecraftCells(
   context.putImageData(materialImage, 0, 0);
   viewCache.canvas = renderTarget;
   viewCache.origin = grid.origin;
+  viewCache.axisX = grid.axisX;
+  viewCache.axisY = grid.axisY;
   viewCache.zoom = map.getZoom();
+  viewCache.bearing = map.getBearing();
   viewCache.paddingCells = paddingCells;
   viewCache.renderedAt = performance.now();
   renderCachedMinecraftPreview(map, target, viewCache);
@@ -754,13 +787,28 @@ function renderCachedMinecraftPreview(
   const viewportOffsetX = Math.max(0, (source.clientWidth - target.clientWidth) / 2);
   const viewportOffsetY = Math.max(0, (source.clientHeight - target.clientHeight) / 2);
   const cacheOrigin = map.project(cache.origin);
-  const scale = 2 ** (map.getZoom() - cache.zoom);
-  const width = cache.canvas.width * scale;
-  const height = cache.canvas.height * scale;
-  const left = (cacheOrigin.x - viewportOffsetX) / cellSize;
-  const top = (cacheOrigin.y - viewportOffsetY) / cellSize;
+  const cacheAxisX = map.project(cache.axisX);
+  const cacheAxisY = map.project(cache.axisY);
+  const transform = {
+    a: (cacheAxisX.x - cacheOrigin.x) / cellSize,
+    b: (cacheAxisX.y - cacheOrigin.y) / cellSize,
+    c: (cacheAxisY.x - cacheOrigin.x) / cellSize,
+    d: (cacheAxisY.y - cacheOrigin.y) / cellSize,
+    e: (cacheOrigin.x - viewportOffsetX) / cellSize,
+    f: (cacheOrigin.y - viewportOffsetY) / cellSize,
+  };
   context.imageSmoothingEnabled = false;
-  context.drawImage(cache.canvas, left, top, width, height);
+  context.save();
+  context.setTransform(
+    transform.a,
+    transform.b,
+    transform.c,
+    transform.d,
+    transform.e,
+    transform.f,
+  );
+  context.drawImage(cache.canvas, 0, 0);
+  context.restore();
   target.hidden = false;
 }
 
@@ -776,24 +824,42 @@ function minecraftCacheNeedsRefresh(
   const viewportHeight = Math.max(1, Math.ceil(target.clientHeight / cellSize));
   const viewportOffsetX = Math.max(0, (source.clientWidth - target.clientWidth) / 2);
   const viewportOffsetY = Math.max(0, (source.clientHeight - target.clientHeight) / 2);
-  const scale = 2 ** (map.getZoom() - cache.zoom);
   if (Math.abs(map.getZoom() - cache.zoom) > 0.25) return true;
+  const bearingDelta = Math.abs((((map.getBearing() - cache.bearing + 540) % 360) - 180));
+  if (bearingDelta > 12) return true;
 
   const cacheOrigin = map.project(cache.origin);
-  const cacheWidth = cache.canvas.width * scale;
-  const cacheHeight = cache.canvas.height * scale;
-  const left = (cacheOrigin.x - viewportOffsetX) / cellSize;
-  const top = (cacheOrigin.y - viewportOffsetY) / cellSize;
-  const right = left + cacheWidth;
-  const bottom = top + cacheHeight;
-  const minimumBuffer = Math.max(6, cache.paddingCells * scale * 0.4);
+  const cacheAxisX = map.project(cache.axisX);
+  const cacheAxisY = map.project(cache.axisY);
+  const a = (cacheAxisX.x - cacheOrigin.x) / cellSize;
+  const b = (cacheAxisX.y - cacheOrigin.y) / cellSize;
+  const c = (cacheAxisY.x - cacheOrigin.x) / cellSize;
+  const d = (cacheAxisY.y - cacheOrigin.y) / cellSize;
+  const e = (cacheOrigin.x - viewportOffsetX) / cellSize;
+  const f = (cacheOrigin.y - viewportOffsetY) / cellSize;
+  const determinant = a * d - b * c;
+  if (Math.abs(determinant) < 0.0001) return true;
+  const viewportCorners = [
+    [0, 0],
+    [viewportWidth, 0],
+    [viewportWidth, viewportHeight],
+    [0, viewportHeight],
+  ];
+  const scale = 2 ** (map.getZoom() - cache.zoom);
+  const minimumBuffer = Math.max(4, cache.paddingCells * 0.35 / Math.max(0.25, scale));
   if (map.isMoving() && performance.now() - cache.renderedAt > 900) return true;
-  return (
-    -left < minimumBuffer ||
-    -top < minimumBuffer ||
-    right - viewportWidth < minimumBuffer ||
-    bottom - viewportHeight < minimumBuffer
-  );
+  return viewportCorners.some(([x, y]) => {
+    const offsetX = x - e;
+    const offsetY = y - f;
+    const cacheX = (d * offsetX - c * offsetY) / determinant;
+    const cacheY = (-b * offsetX + a * offsetY) / determinant;
+    return (
+      cacheX < minimumBuffer ||
+      cacheY < minimumBuffer ||
+      cacheX > cache.canvas!.width - minimumBuffer ||
+      cacheY > cache.canvas!.height - minimumBuffer
+    );
+  });
 }
 
 function renderNavigationRoute(
@@ -899,6 +965,43 @@ function distanceMeters(from: [number, number], to: [number, number]) {
     Math.sin(latitudeDelta / 2) ** 2 +
     Math.cos(latitude1) * Math.cos(latitude2) * Math.sin(longitudeDelta / 2) ** 2;
   return earthRadius * 2 * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine));
+}
+
+function normalizeBearing(bearing: number) {
+  return ((bearing % 360) + 360) % 360;
+}
+
+function bearingBetween(from: [number, number], to: [number, number]) {
+  const latitude1 = from[1] * (Math.PI / 180);
+  const latitude2 = to[1] * (Math.PI / 180);
+  const longitudeDelta = (to[0] - from[0]) * (Math.PI / 180);
+  const y = Math.sin(longitudeDelta) * Math.cos(latitude2);
+  const x =
+    Math.cos(latitude1) * Math.sin(latitude2) -
+    Math.sin(latitude1) * Math.cos(latitude2) * Math.cos(longitudeDelta);
+  return normalizeBearing(Math.atan2(y, x) * (180 / Math.PI));
+}
+
+function routeBearingAt(coordinates: Array<[number, number]>, index: number) {
+  if (coordinates.length < 2) return null;
+  const startIndex = Math.min(Math.max(0, index), coordinates.length - 2);
+  const start = coordinates[startIndex];
+  const searchEnd = Math.min(coordinates.length - 1, startIndex + 20);
+  for (let nextIndex = startIndex + 1; nextIndex <= searchEnd; nextIndex += 1) {
+    if (distanceMeters(start, coordinates[nextIndex]) >= 12) {
+      return bearingBetween(start, coordinates[nextIndex]);
+    }
+  }
+  return bearingBetween(start, coordinates[startIndex + 1]);
+}
+
+function smoothNavigationBearing(previous: number | null, next: number) {
+  const normalized = normalizeBearing(next);
+  if (previous == null) return normalized;
+  const difference = ((normalized - previous + 540) % 360) - 180;
+  if (Math.abs(difference) < 1) return normalizeBearing(previous);
+  const response = Math.abs(difference) > 75 ? 0.65 : 0.42;
+  return normalizeBearing(previous + difference * response);
 }
 
 function cumulativeRouteDistances(coordinates: Array<[number, number]>) {
@@ -1127,6 +1230,7 @@ export default function MinecraftMap() {
   const routeDurationRef = useRef(0);
   const routeProgressIndexRef = useRef(0);
   const routeTrackingRef = useRef(false);
+  const navigationBearingRef = useRef<number | null>(null);
   const activeStepIndexRef = useRef(0);
   const offRouteFixesRef = useRef(0);
   const rerouteCooldownFixesRef = useRef(0);
@@ -1216,7 +1320,10 @@ export default function MinecraftMap() {
     const viewCache: MinecraftViewCache = {
       canvas: null,
       origin: [0, 0],
+      axisX: [0, 0],
+      axisY: [0, 0],
       zoom: 10,
+      bearing: 0,
       paddingCells: 0,
       renderedAt: 0,
     };
@@ -1398,6 +1505,8 @@ export default function MinecraftMap() {
         setNavigationDestination(destination);
         routeCoordinatesRef.current = [];
         routeTrackingRef.current = false;
+        navigationBearingRef.current = null;
+        map.easeTo({ bearing: 0, duration: 450, essential: true });
         setRouteSummary(null);
         setRouteSteps([]);
         setRouteActive(false);
@@ -1508,6 +1617,7 @@ export default function MinecraftMap() {
     routeDurationRef.current = 0;
     routeProgressIndexRef.current = 0;
     routeTrackingRef.current = false;
+    navigationBearingRef.current = null;
     activeStepIndexRef.current = 0;
     offRouteFixesRef.current = 0;
     lastSpokenCueRef.current = "";
@@ -1521,6 +1631,9 @@ export default function MinecraftMap() {
     const map = mapRef.current;
     const target = routeCanvasRef.current;
     if (map && target) renderNavigationRoute(map, target, []);
+    if (map && Math.abs(map.getBearing()) > 0.1) {
+      map.easeTo({ bearing: 0, duration: 550, essential: true });
+    }
     if (removeDestination) {
       destinationMarkerRef.current?.remove();
       destinationMarkerRef.current = null;
@@ -1634,6 +1747,10 @@ export default function MinecraftMap() {
     }
     userMarkerRef.current?.remove();
     userMarkerRef.current = null;
+    navigationBearingRef.current = null;
+    if (mapRef.current && Math.abs(mapRef.current.getBearing()) > 0.1) {
+      mapRef.current.easeTo({ bearing: 0, duration: 550, essential: true });
+    }
     setLocationFollowing(false);
     setGpsMode("idle");
     setPlace((current) => ({ ...current, detail: "GPS stopped · last known position" }));
@@ -1684,12 +1801,13 @@ export default function MinecraftMap() {
           userMarkerRef.current.setLngLat(location);
         }
 
+        const wasNavigating = routeTrackingRef.current;
         const arrow = userMarkerRef.current.getElement().querySelector<HTMLElement>(".player-marker-arrow");
-        if (arrow && coords.heading != null && Number.isFinite(coords.heading)) {
+        if (!wasNavigating && arrow && coords.heading != null && Number.isFinite(coords.heading)) {
           arrow.style.setProperty("--player-heading", `${coords.heading}deg`);
         }
 
-        if (followingLocationRef.current) {
+        if (followingLocationRef.current && !wasNavigating) {
           const distanceFromCenter = map.getCenter().distanceTo(location);
           const movementThreshold = Math.max(8, coords.accuracy * 0.15);
           if (isFirstFix || distanceFromCenter > movementThreshold) {
@@ -1707,7 +1825,6 @@ export default function MinecraftMap() {
           ...current,
           detail: `GPS live · accurate to ±${Math.round(coords.accuracy)} m`,
         }));
-        const wasNavigating = routeTrackingRef.current;
         navigationPositionHandlerRef.current(location, coords);
         if (!wasNavigating) setMessage("");
       },
@@ -1823,14 +1940,23 @@ export default function MinecraftMap() {
       if (routeTarget) renderNavigationRoute(map, routeTarget, route.geometry.coordinates);
 
       if (originLabel === "GPS location") {
+        const routeBearing = routeBearingAt(route.geometry.coordinates, 0) ??
+          steps[0]?.maneuver.bearing_after ?? 0;
+        navigationBearingRef.current = smoothNavigationBearing(
+          rerouting ? navigationBearingRef.current : null,
+          routeBearing,
+        );
         setLocationFollowing(true);
         map.easeTo({
           center: origin,
           zoom: Math.max(16, map.getZoom()),
+          bearing: navigationBearingRef.current,
           duration: rerouting ? 350 : 800,
           essential: true,
         });
       } else {
+        navigationBearingRef.current = null;
+        if (Math.abs(map.getBearing()) > 0.1) map.setBearing(0);
         const bounds = route.geometry.coordinates.reduce(
           (current, coordinate) => current.extend(coordinate),
           new maplibregl.LngLatBounds(route.geometry.coordinates[0], route.geometry.coordinates[0]),
@@ -1874,12 +2000,39 @@ export default function MinecraftMap() {
 
   const handleNavigationPosition = (location: [number, number], coords: GeolocationCoordinates) => {
     if (!routeTrackingRef.current || routeCoordinatesRef.current.length < 2) return;
+    const map = mapRef.current;
+    const closest = closestRoutePoint(location, routeCoordinatesRef.current, routeProgressIndexRef.current);
+    const routeBearing = routeBearingAt(routeCoordinatesRef.current, closest.index);
+    const gpsBearing =
+      coords.heading != null &&
+      Number.isFinite(coords.heading) &&
+      (coords.speed == null || coords.speed >= 1.2)
+        ? normalizeBearing(coords.heading)
+        : null;
+    const desiredBearing = gpsBearing ?? routeBearing ?? navigationBearingRef.current ?? 0;
+    const cameraBearing = smoothNavigationBearing(navigationBearingRef.current, desiredBearing);
+    navigationBearingRef.current = cameraBearing;
+    const arrow = userMarkerRef.current?.getElement().querySelector<HTMLElement>(".player-marker-arrow");
+    if (arrow) {
+      const relativeBearing = followingLocationRef.current
+        ? 0
+        : ((desiredBearing - (map?.getBearing() ?? 0) + 540) % 360) - 180;
+      arrow.style.setProperty("--player-heading", `${relativeBearing}deg`);
+    }
+    if (map && followingLocationRef.current) {
+      map.easeTo({
+        center: location,
+        zoom: Math.max(16, map.getZoom()),
+        bearing: cameraBearing,
+        duration: 500,
+        essential: true,
+      });
+    }
     if (routingRef.current) {
       setNavigationStatus("rerouting");
       return;
     }
 
-    const closest = closestRoutePoint(location, routeCoordinatesRef.current, routeProgressIndexRef.current);
     const offRouteThreshold = Math.max(90, Math.min(220, coords.accuracy * 2.5));
     if (closest.distance <= offRouteThreshold) {
       routeProgressIndexRef.current = Math.max(routeProgressIndexRef.current, closest.index);
@@ -1897,6 +2050,10 @@ export default function MinecraftMap() {
 
     if (destinationDistance <= arrivalRadius) {
       routeTrackingRef.current = false;
+      navigationBearingRef.current = null;
+      if (map && Math.abs(map.getBearing()) > 0.1) {
+        map.easeTo({ bearing: 0, duration: 700, essential: true });
+      }
       setNavigationStatus("arrived");
       setRouteSummary((current) => current ? { ...current, distance: 0, duration: 0 } : current);
       const arrivedIndex = Math.max(0, routeStepsRef.current.length - 1);
@@ -1972,8 +2129,18 @@ export default function MinecraftMap() {
       return;
     }
     setLocationFollowing(true);
-    map.easeTo({ center: marker.getLngLat(), zoom: Math.max(16, map.getZoom()), duration: 600, essential: true });
-    setMessage("Following your live GPS position.");
+    const routeBearing = routeBearingAt(routeCoordinatesRef.current, routeProgressIndexRef.current);
+    const bearing = routeTrackingRef.current
+      ? navigationBearingRef.current ?? routeBearing ?? map.getBearing()
+      : 0;
+    map.easeTo({
+      center: marker.getLngLat(),
+      zoom: Math.max(16, map.getZoom()),
+      bearing,
+      duration: 600,
+      essential: true,
+    });
+    setMessage(routeTrackingRef.current ? "Following your direction of travel." : "Following your live GPS position.");
   };
 
   const toggleNavigationVoice = () => {
@@ -2187,9 +2354,21 @@ export default function MinecraftMap() {
                     className={followingLocation ? "enabled" : ""}
                     onClick={recenterNavigation}
                     aria-pressed={followingLocation}
-                    title={followingLocation ? "Live GPS follow is active" : "Recenter and follow your GPS position"}
+                    title={
+                      followingLocation &&
+                      navigationStatus !== "preview" &&
+                      navigationStatus !== "arrived"
+                        ? "Heading-up GPS follow is active"
+                        : followingLocation
+                          ? "Live GPS follow is active"
+                          : "Recenter and follow your GPS position"
+                    }
                   >
-                    {followingLocation ? "FOLLOWING" : "RECENTER"}
+                    {followingLocation && navigationStatus !== "preview" && navigationStatus !== "arrived"
+                      ? "HEADING UP"
+                      : followingLocation
+                        ? "FOLLOWING"
+                        : "RECENTER"}
                   </button>
                   <button className={voiceEnabled ? "enabled" : ""} onClick={toggleNavigationVoice}>
                     {voiceEnabled ? "VOICE ON" : "VOICE OFF"}
