@@ -2230,7 +2230,6 @@ export default function MinecraftMap() {
             </div>
           )}
         </div>
-        <div className="header-note">EARTH · SEED 2026</div>
       </header>
 
       <section

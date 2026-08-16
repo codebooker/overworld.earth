@@ -38,7 +38,6 @@ button { touch-action: manipulation; }
 .search-results small { color: #6f654f; font-size: 9px; }
 .result-pin { width: 10px; height: 13px; flex: 0 0 10px; margin-top: 2px; background: #a4382b; border: 2px solid #4c241d; box-shadow: 2px 2px 0 #7a6448; }
 .geocode-credit { padding: 6px 8px 2px; color: #746a53; text-align: right; font-size: 8px; }
-.header-note { justify-self: end; color: #98a383; font-size: 11px; letter-spacing: .08em; }
 .map-frame { position: relative; flex: 1; min-height: 0; margin: 14px; overflow: hidden; background: #66854c; border: 8px solid #c5b08a; outline: 4px solid #77664c; box-shadow: inset 0 0 0 3px #eadab5, 7px 7px 0 rgba(0,0,0,.55); }
 .map { --map-overscan: 160px; position: absolute; inset: calc(var(--map-overscan) * -1); touch-action: none; }
 .map .maplibregl-ctrl-bottom-right { right: var(--map-overscan); bottom: var(--map-overscan); }
@@ -146,7 +145,6 @@ button { touch-action: manipulation; }
 @media (max-width: 720px) {
   .map { --map-overscan: 96px; }
   .topbar { grid-template-columns: auto 1fr; gap: 10px; height: 60px; flex-basis: 60px; padding: 0 12px; }
-  .header-note { display: none; }
   .brand { font-size: 0; gap: 0; }
   .brand-cube { width: 29px; height: 29px; }
   .search-shell { min-width: 0; }
@@ -189,7 +187,6 @@ button { touch-action: manipulation; }
   .topbar { grid-template-columns: auto minmax(220px, 520px) 1fr; gap: 10px; height: 52px; flex-basis: 52px; padding: 0 10px; }
   .brand { font-size: 0; gap: 0; }
   .brand-cube { width: 28px; height: 28px; }
-  .header-note { display: none; }
   .search-shell { height: 42px; }
   .search-shell input { font-size: 16px; }
   .search-shell kbd { display: none; }
