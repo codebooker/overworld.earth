@@ -219,8 +219,10 @@ function renderMinecraftCells(
   const cellSize = window.innerWidth < 720 ? 5 : 6;
   const width = Math.max(1, Math.ceil(source.clientWidth / cellSize));
   const height = Math.max(1, Math.ceil(source.clientHeight / cellSize));
-  if (target.width !== width) target.width = width;
-  if (target.height !== height) target.height = height;
+  // The same bitmap hosts the cheap moving preview. Reset it before the
+  // semantic pass so mask reads always happen on a clean canvas.
+  target.width = width;
+  target.height = height;
 
   const context = target.getContext("2d", { willReadFrequently: true });
   if (!context) return;
@@ -399,6 +401,24 @@ function renderMinecraftCells(
   target.hidden = false;
 }
 
+function renderMovingPreview(map: MapLibreMap, target: HTMLCanvasElement) {
+  const source = map.getCanvas();
+  if (source.clientWidth === 0 || source.clientHeight === 0) return;
+
+  const cellSize = window.innerWidth < 720 ? 5 : 6;
+  const width = Math.max(1, Math.ceil(source.clientWidth / cellSize));
+  const height = Math.max(1, Math.ceil(source.clientHeight / cellSize));
+  if (target.width !== width) target.width = width;
+  if (target.height !== height) target.height = height;
+
+  const context = target.getContext("2d");
+  if (!context) return;
+  context.imageSmoothingEnabled = false;
+  context.clearRect(0, 0, width, height);
+  context.drawImage(source, 0, 0, source.width, source.height, 0, 0, width, height);
+  target.hidden = false;
+}
+
 const destinations = [
   { label: "New York", center: [-74.006, 40.7128] as [number, number], zoom: 10 },
   { label: "The Alps", center: [10.1, 46.5] as [number, number], zoom: 7 },
@@ -559,6 +579,9 @@ export default function MinecraftMap() {
   const pixelCanvasRef = useRef<HTMLCanvasElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const markerRef = useRef<maplibregl.Marker | null>(null);
+  const userMarkerRef = useRef<maplibregl.Marker | null>(null);
+  const locationWatchRef = useRef<number | null>(null);
+  const followingLocationRef = useRef(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const [zoom, setZoom] = useState(10);
   const [coordinates, setCoordinates] = useState({ lng: -74.006, lat: 40.7128 });
@@ -569,6 +592,8 @@ export default function MinecraftMap() {
   const [message, setMessage] = useState("");
   const [legendOpen, setLegendOpen] = useState(true);
   const [ready, setReady] = useState(false);
+  const [gpsMode, setGpsMode] = useState<"idle" | "locating" | "tracking">("idle");
+  const [followingLocation, setFollowingLocation] = useState(false);
 
   useEffect(() => {
     if (!mapNode.current || mapRef.current) return;
@@ -602,6 +627,7 @@ export default function MinecraftMap() {
     map.touchZoomRotate.disableRotation();
     map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
     let pixelFrame: number | null = null;
+    let previewFrame: number | null = null;
     let pixelTimer: number | null = null;
     const terrainCache: TerrainShadeCache = { key: "", values: null };
     const terrainTiles: TerrainTileCache = new Map();
@@ -619,11 +645,19 @@ export default function MinecraftMap() {
             renderMinecraftCells(map, target, terrainCache, terrainTiles, () => renderPixels(100));
             mapNode.current?.classList.remove("map-moving");
           } catch {
-            target.hidden = true;
-            map.getCanvas().classList.add("pixel-fallback");
+            renderMovingPreview(map, target);
+            mapNode.current?.classList.remove("map-moving");
           }
         });
       }, delay);
+    };
+    const renderPreview = () => {
+      if (previewFrame !== null) return;
+      previewFrame = window.requestAnimationFrame(() => {
+        previewFrame = null;
+        const target = pixelCanvasRef.current;
+        if (target) renderMovingPreview(map, target);
+      });
     };
     const loadingTimeout = window.setTimeout(() => setReady(true), 10000);
     map.on("load", () => {
@@ -639,6 +673,15 @@ export default function MinecraftMap() {
       mapNode.current?.classList.add("map-moving");
       if (pixelTimer !== null) window.clearTimeout(pixelTimer);
       pixelTimer = null;
+      renderPreview();
+    });
+    map.on("render", () => {
+      if (map.isMoving()) renderPreview();
+    });
+    map.on("dragstart", () => {
+      if (!followingLocationRef.current) return;
+      followingLocationRef.current = false;
+      setFollowingLocation(false);
     });
     map.on("move", () => {
       const center = map.getCenter();
@@ -673,6 +716,12 @@ export default function MinecraftMap() {
       window.clearTimeout(loadingTimeout);
       if (pixelTimer !== null) window.clearTimeout(pixelTimer);
       if (pixelFrame !== null) window.cancelAnimationFrame(pixelFrame);
+      if (previewFrame !== null) window.cancelAnimationFrame(previewFrame);
+      if (locationWatchRef.current !== null && navigator.geolocation) {
+        navigator.geolocation.clearWatch(locationWatchRef.current);
+        locationWatchRef.current = null;
+      }
+      userMarkerRef.current?.remove();
       map.remove();
       mapRef.current = null;
     };
@@ -694,6 +743,7 @@ export default function MinecraftMap() {
   }, []);
 
   const goTo = (title: string, center: [number, number], destinationZoom = 10, detail = "Real terrain · block by block") => {
+    setLocationFollowing(false);
     mapRef.current?.flyTo({ center, zoom: destinationZoom, duration: 1300, essential: true });
     markerRef.current?.remove();
     setPlace({ title, detail });
@@ -726,6 +776,7 @@ export default function MinecraftMap() {
     const west = Number(result.boundingbox[2]);
     const east = Number(result.boundingbox[3]);
     const nameParts = result.display_name.split(",").map((part) => part.trim());
+    setLocationFollowing(false);
     mapRef.current?.fitBounds([[west, south], [east, north]], { padding: 90, maxZoom: 14, duration: 1300 });
     markerRef.current?.remove();
     const markerNode = document.createElement("div");
@@ -738,19 +789,111 @@ export default function MinecraftMap() {
     setResults([]);
   };
 
+  const setLocationFollowing = (following: boolean) => {
+    followingLocationRef.current = following;
+    setFollowingLocation(following);
+  };
+
+  const stopGps = () => {
+    if (locationWatchRef.current !== null) {
+      navigator.geolocation.clearWatch(locationWatchRef.current);
+      locationWatchRef.current = null;
+    }
+    userMarkerRef.current?.remove();
+    userMarkerRef.current = null;
+    setLocationFollowing(false);
+    setGpsMode("idle");
+    setPlace((current) =>
+      current.title === "Your location"
+        ? { title: current.title, detail: "GPS stopped · last known position" }
+        : current,
+    );
+    setMessage("GPS stopped.");
+  };
+
   const locateMe = () => {
     if (!navigator.geolocation) {
       setMessage("Location is not available on this device.");
       return;
     }
+
+    if (locationWatchRef.current !== null) {
+      if (followingLocationRef.current) {
+        stopGps();
+      } else if (userMarkerRef.current && mapRef.current) {
+        setLocationFollowing(true);
+        mapRef.current.easeTo({
+          center: userMarkerRef.current.getLngLat(),
+          duration: 650,
+          essential: true,
+        });
+        setMessage("Following your live GPS position.");
+      }
+      return;
+    }
+
+    setGpsMode("locating");
+    setLocationFollowing(true);
     setMessage("Finding your spawn point…");
-    navigator.geolocation.getCurrentPosition(
+    locationWatchRef.current = navigator.geolocation.watchPosition(
       ({ coords }) => {
-        goTo("Your location", [coords.longitude, coords.latitude], 13, "Current spawn point");
+        const map = mapRef.current;
+        if (!map) return;
+        const location: [number, number] = [coords.longitude, coords.latitude];
+        const isFirstFix = userMarkerRef.current === null;
+
+        if (!userMarkerRef.current) {
+          const markerNode = document.createElement("div");
+          markerNode.className = "player-marker-shell";
+          const arrowNode = document.createElement("div");
+          arrowNode.className = "player-marker-arrow";
+          markerNode.appendChild(arrowNode);
+          userMarkerRef.current = new maplibregl.Marker({ element: markerNode, anchor: "center" })
+            .setLngLat(location)
+            .addTo(map);
+        } else {
+          userMarkerRef.current.setLngLat(location);
+        }
+
+        const arrow = userMarkerRef.current.getElement().querySelector<HTMLElement>(".player-marker-arrow");
+        if (arrow && coords.heading != null && Number.isFinite(coords.heading)) {
+          arrow.style.setProperty("--player-heading", `${coords.heading}deg`);
+        }
+
+        if (followingLocationRef.current) {
+          const distanceFromCenter = map.getCenter().distanceTo(location);
+          const movementThreshold = Math.max(8, coords.accuracy * 0.15);
+          if (isFirstFix || distanceFromCenter > movementThreshold) {
+            map.easeTo({
+              center: location,
+              zoom: isFirstFix ? Math.max(15, map.getZoom()) : map.getZoom(),
+              duration: isFirstFix ? 800 : 500,
+              essential: true,
+            });
+          }
+        }
+
+        setGpsMode("tracking");
+        setPlace({
+          title: "Your location",
+          detail: `GPS live · accurate to ±${Math.round(coords.accuracy)} m`,
+        });
         setMessage("");
       },
-      () => setMessage("Location permission was not granted."),
-      { enableHighAccuracy: true, timeout: 8000 },
+      (error) => {
+        if (locationWatchRef.current !== null) {
+          navigator.geolocation.clearWatch(locationWatchRef.current);
+          locationWatchRef.current = null;
+        }
+        setLocationFollowing(false);
+        setGpsMode("idle");
+        setMessage(
+          error.code === error.PERMISSION_DENIED
+            ? "Location permission was not granted."
+            : "Your GPS position is unavailable right now.",
+        );
+      },
+      { enableHighAccuracy: true, maximumAge: 3000, timeout: 15000 },
     );
   };
 
@@ -808,7 +951,27 @@ export default function MinecraftMap() {
           <button onClick={() => mapRef.current?.zoomOut()} aria-label="Zoom out">−</button>
         </div>
         <div className="map-tools">
-          <button onClick={locateMe} aria-label="Find my location" title="Find my location">◎</button>
+          <button
+            className={gpsMode === "tracking" ? "gps-active" : ""}
+            onClick={locateMe}
+            aria-label={
+              gpsMode === "idle"
+                ? "Start live GPS"
+                : followingLocation
+                  ? "Stop live GPS"
+                  : "Follow my live GPS position"
+            }
+            aria-pressed={gpsMode === "tracking"}
+            title={
+              gpsMode === "idle"
+                ? "Start live GPS"
+                : followingLocation
+                  ? "GPS live — tap to stop"
+                  : "Recenter on my location"
+            }
+          >
+            {gpsMode === "locating" ? <span className="gps-loading" /> : "◎"}
+          </button>
           <button onClick={() => setLegendOpen((open) => !open)} aria-label="Toggle map key" title="Map key">▦</button>
         </div>
 
