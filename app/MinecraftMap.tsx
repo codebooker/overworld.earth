@@ -32,14 +32,14 @@ const minecraftStyle: maplibregl.StyleSpecification = {
     },
   },
   layers: [
-    { id: "earth", type: "background", paint: { "background-color": "#6b8d45" } },
+    { id: "earth", type: "background", paint: { "background-color": "#5b873d" } },
     {
       id: "farmland",
       type: "fill",
       source: "world",
       "source-layer": "landuse",
       filter: ["in", ["get", "class"], ["literal", ["farmland", "farm", "orchard", "vineyard"]]],
-      paint: { "fill-color": "#9aa653", "fill-opacity": 0.9, "fill-antialias": false },
+      paint: { "fill-color": "#829346", "fill-opacity": 0.92, "fill-antialias": false },
     },
     {
       id: "built-land",
@@ -47,7 +47,7 @@ const minecraftStyle: maplibregl.StyleSpecification = {
       source: "world",
       "source-layer": "landuse",
       filter: ["in", ["get", "class"], ["literal", ["residential", "commercial", "industrial"]]],
-      paint: { "fill-color": "#aa9d79", "fill-opacity": 0.78, "fill-antialias": false },
+      paint: { "fill-color": "#8f7961", "fill-opacity": 0.88, "fill-antialias": false },
     },
     {
       id: "grass",
@@ -55,7 +55,7 @@ const minecraftStyle: maplibregl.StyleSpecification = {
       source: "world",
       "source-layer": "landcover",
       filter: ["==", ["get", "class"], "grass"],
-      paint: { "fill-color": "#7e9c4b", "fill-antialias": false },
+      paint: { "fill-color": "#64923f", "fill-antialias": false },
     },
     {
       id: "wood",
@@ -63,7 +63,7 @@ const minecraftStyle: maplibregl.StyleSpecification = {
       source: "world",
       "source-layer": "landcover",
       filter: ["==", ["get", "class"], "wood"],
-      paint: { "fill-color": "#486b37", "fill-opacity": 0.95, "fill-antialias": false },
+      paint: { "fill-color": "#2f6b2f", "fill-opacity": 0.97, "fill-antialias": false },
     },
     {
       id: "sand",
@@ -71,7 +71,7 @@ const minecraftStyle: maplibregl.StyleSpecification = {
       source: "world",
       "source-layer": "landcover",
       filter: ["==", ["get", "class"], "sand"],
-      paint: { "fill-color": "#d7cb83", "fill-antialias": false },
+      paint: { "fill-color": "#ded29a", "fill-antialias": false },
     },
     {
       id: "ice",
@@ -79,14 +79,14 @@ const minecraftStyle: maplibregl.StyleSpecification = {
       source: "world",
       "source-layer": "landcover",
       filter: ["==", ["get", "class"], "ice"],
-      paint: { "fill-color": "#d9e7d5", "fill-antialias": false },
+      paint: { "fill-color": "#e5e8e1", "fill-antialias": false },
     },
     {
       id: "parks",
       type: "fill",
       source: "world",
       "source-layer": "park",
-      paint: { "fill-color": "#668b42", "fill-opacity": 0.85, "fill-antialias": false },
+      paint: { "fill-color": "#4b7d35", "fill-opacity": 0.9, "fill-antialias": false },
     },
     {
       id: "water",
@@ -94,7 +94,7 @@ const minecraftStyle: maplibregl.StyleSpecification = {
       source: "world",
       "source-layer": "water",
       filter: ["!=", ["get", "brunnel"], "tunnel"],
-      paint: { "fill-color": "#3f76a8", "fill-antialias": false },
+      paint: { "fill-color": "#354cb8", "fill-antialias": false },
     },
     {
       id: "rivers",
@@ -102,7 +102,7 @@ const minecraftStyle: maplibregl.StyleSpecification = {
       source: "world",
       "source-layer": "waterway",
       paint: {
-        "line-color": "#3f76a8",
+        "line-color": "#354cb8",
         "line-width": ["interpolate", ["linear"], ["zoom"], 7, 0.5, 14, 2.5, 18, 8],
       },
     },
@@ -111,12 +111,12 @@ const minecraftStyle: maplibregl.StyleSpecification = {
       type: "line",
       source: "world",
       "source-layer": "transportation",
-      filter: ["in", ["get", "class"], ["literal", ["motorway", "trunk", "primary", "secondary", "tertiary", "minor"]]],
+      filter: ["in", ["get", "class"], ["literal", ["motorway", "trunk", "primary", "secondary", "tertiary"]]],
       layout: { "line-cap": "butt", "line-join": "bevel" },
       paint: {
-        "line-color": "#c9b47a",
-        "line-width": ["interpolate", ["linear"], ["zoom"], 5, 0.4, 12, 1.4, 18, 7],
-        "line-opacity": ["interpolate", ["linear"], ["zoom"], 5, 0.55, 9, 0.9],
+        "line-color": "#cdbc82",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 5, 0.4, 12, 1.2, 18, 5],
+        "line-opacity": ["interpolate", ["linear"], ["zoom"], 5, 0.48, 10, 0.8],
       },
     },
     {
@@ -125,32 +125,14 @@ const minecraftStyle: maplibregl.StyleSpecification = {
       source: "world",
       "source-layer": "building",
       minzoom: 13,
-      paint: { "fill-color": "#89735b", "fill-outline-color": "#5e5143", "fill-antialias": false },
-    },
-    {
-      id: "place-labels",
-      type: "symbol",
-      source: "world",
-      "source-layer": "place",
-      filter: ["in", ["get", "class"], ["literal", ["country", "state", "city", "town", "village"]]],
-      layout: {
-        "text-field": ["coalesce", ["get", "name_en"], ["get", "name"]],
-        "text-font": ["Noto Sans Bold"],
-        "text-size": ["interpolate", ["linear"], ["zoom"], 3, 10, 10, 14, 16, 16],
-        "text-transform": "uppercase",
-        "text-letter-spacing": 0.08,
-      },
-      paint: {
-        "text-color": "#29251e",
-        "text-halo-color": "#d8cda9",
-        "text-halo-width": 1.4,
-      },
+      paint: { "fill-color": "#756453", "fill-antialias": false },
     },
   ],
 };
 
 export default function MinecraftMap() {
   const mapNode = useRef<HTMLDivElement>(null);
+  const pixelCanvasRef = useRef<HTMLCanvasElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const markerRef = useRef<maplibregl.Marker | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -188,9 +170,64 @@ export default function MinecraftMap() {
 
     map.touchZoomRotate.disableRotation();
     map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
+    let pixelFrame: number | null = null;
+    const renderPixels = () => {
+      if (pixelFrame !== null) return;
+      pixelFrame = window.requestAnimationFrame(() => {
+        pixelFrame = null;
+        const source = map.getCanvas();
+        const target = pixelCanvasRef.current;
+        if (!target || source.clientWidth === 0 || source.clientHeight === 0) return;
+
+        // A filled Minecraft map is a deliberately tiny raster. Sample the
+        // real vector map at roughly one cell per five CSS pixels, then enlarge
+        // with nearest-neighbour rendering so every shoreline and road becomes
+        // a real square step instead of a smooth line under a decorative grid.
+        const cellSize = window.innerWidth < 720 ? 4 : 5;
+        const width = Math.max(1, Math.round(source.clientWidth / cellSize));
+        const height = Math.max(1, Math.round(source.clientHeight / cellSize));
+        if (target.width !== width) target.width = width;
+        if (target.height !== height) target.height = height;
+
+        const context = target.getContext("2d", { willReadFrequently: true });
+        if (!context) return;
+        context.imageSmoothingEnabled = false;
+
+        try {
+          context.drawImage(source, 0, 0, source.width, source.height, 0, 0, width, height);
+          const image = context.getImageData(0, 0, width, height);
+          const pixels = image.data;
+
+          for (let y = 0; y < height; y += 1) {
+            for (let x = 0; x < width; x += 1) {
+              const offset = (y * width + x) * 4;
+              const hash = (x * 17 + y * 31 + (x * y) % 13) & 31;
+              const shade = hash === 0 ? 0.78 : hash < 4 ? 0.9 : hash === 31 ? 1.1 : 1;
+
+              // Minecraft map colors are selected from a small palette with a
+              // handful of brightness bands. Quantizing here creates the same
+              // mottled blocks without inventing terrain that is not present.
+              pixels[offset] = Math.min(255, Math.round((pixels[offset] * shade) / 16) * 16);
+              pixels[offset + 1] = Math.min(255, Math.round((pixels[offset + 1] * shade) / 16) * 16);
+              pixels[offset + 2] = Math.min(255, Math.round((pixels[offset + 2] * shade) / 16) * 16);
+            }
+          }
+
+          context.putImageData(image, 0, 0);
+          target.hidden = false;
+        } catch {
+          target.hidden = true;
+          source.classList.add("pixel-fallback");
+        }
+      });
+    };
+    map.on("render", renderPixels);
     const loadingTimeout = window.setTimeout(() => setReady(true), 10000);
     map.on("load", () => {
       window.clearTimeout(loadingTimeout);
+      const center = map.getCenter();
+      setCoordinates({ lng: center.lng, lat: center.lat });
+      setZoom(Math.round(map.getZoom()));
       setReady(true);
     });
     map.on("move", () => {
@@ -222,6 +259,7 @@ export default function MinecraftMap() {
 
     return () => {
       window.clearTimeout(loadingTimeout);
+      if (pixelFrame !== null) window.cancelAnimationFrame(pixelFrame);
       map.remove();
       mapRef.current = null;
     };
@@ -343,6 +381,7 @@ export default function MinecraftMap() {
 
       <section className="map-frame" aria-label="Interactive Minecraft-style world map">
         <div ref={mapNode} className="map" />
+        <canvas ref={pixelCanvasRef} className="pixel-map-canvas" aria-hidden="true" />
         <div className="pixel-grid" aria-hidden="true" />
         {!ready && <div className="map-loading"><span />GENERATING CHUNKS…</div>}
         <div className="map-title-card">
