@@ -53,6 +53,7 @@ type NavigationDestination = {
 type RouteStep = {
   distance: number;
   duration: number;
+  geometry?: { coordinates: Array<[number, number]>; type: "LineString" };
   name: string;
   maneuver: {
     bearing_after: number;
@@ -67,6 +68,8 @@ type RouteSummary = {
   duration: number;
   origin: "GPS location" | "map center";
 };
+
+type NavigationStatus = "preview" | "navigating" | "rerouting" | "arrived";
 
 type OsrmRouteResponse = {
   code: string;
@@ -616,12 +619,14 @@ function renderNavigationRoute(
 }
 
 function formatRouteDistance(meters: number) {
+  if (meters <= 0) return "0 ft";
   const miles = meters / 1609.344;
   if (miles >= 0.2) return `${miles < 10 ? miles.toFixed(1) : Math.round(miles)} mi`;
   return `${Math.max(50, Math.round((meters * 3.28084) / 50) * 50)} ft`;
 }
 
 function formatRouteDuration(seconds: number) {
+  if (seconds <= 0) return "0 min";
   const minutes = Math.max(1, Math.round(seconds / 60));
   if (minutes < 60) return `${minutes} min`;
   const hours = Math.floor(minutes / 60);
@@ -664,6 +669,61 @@ function routeInstruction(step: RouteStep) {
     default:
       return `Continue on${road}`;
   }
+}
+
+function distanceMeters(from: [number, number], to: [number, number]) {
+  const earthRadius = 6371008.8;
+  const latitude1 = from[1] * (Math.PI / 180);
+  const latitude2 = to[1] * (Math.PI / 180);
+  const latitudeDelta = (to[1] - from[1]) * (Math.PI / 180);
+  const longitudeDelta = (to[0] - from[0]) * (Math.PI / 180);
+  const haversine =
+    Math.sin(latitudeDelta / 2) ** 2 +
+    Math.cos(latitude1) * Math.cos(latitude2) * Math.sin(longitudeDelta / 2) ** 2;
+  return earthRadius * 2 * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine));
+}
+
+function cumulativeRouteDistances(coordinates: Array<[number, number]>) {
+  const distances = new Float64Array(coordinates.length);
+  for (let index = 1; index < coordinates.length; index += 1) {
+    distances[index] = distances[index - 1] + distanceMeters(coordinates[index - 1], coordinates[index]);
+  }
+  return distances;
+}
+
+function closestRoutePoint(
+  location: [number, number],
+  coordinates: Array<[number, number]>,
+  previousIndex: number,
+) {
+  if (coordinates.length === 0) return { index: 0, distance: Number.POSITIVE_INFINITY };
+
+  const findClosest = (start: number, end: number) => {
+    let closestIndex = start;
+    let closestDistance = Number.POSITIVE_INFINITY;
+    for (let index = start; index <= end; index += 1) {
+      const distance = distanceMeters(location, coordinates[index]);
+      if (distance < closestDistance) {
+        closestIndex = index;
+        closestDistance = distance;
+      }
+    }
+    return { index: closestIndex, distance: closestDistance };
+  };
+
+  const windowStart = Math.max(0, previousIndex - 80);
+  const windowEnd = Math.min(coordinates.length - 1, previousIndex + 500);
+  const nearby = findClosest(windowStart, windowEnd);
+  return nearby.distance <= 140 ? nearby : findClosest(0, coordinates.length - 1);
+}
+
+function speakNavigation(text: string) {
+  if (!("speechSynthesis" in window)) return;
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.rate = 0.98;
+  utterance.pitch = 0.92;
+  window.speechSynthesis.speak(utterance);
 }
 
 const destinations = [
@@ -846,7 +906,25 @@ export default function MinecraftMap() {
   const followingLocationRef = useRef(false);
   const navigationOpenRef = useRef(false);
   const navigationOriginRef = useRef<[number, number] | null>(null);
+  const navigationDestinationRef = useRef<NavigationDestination | null>(null);
   const routeCoordinatesRef = useRef<Array<[number, number]>>([]);
+  const routeDistancesRef = useRef(new Float64Array());
+  const routeStepsRef = useRef<RouteStep[]>([]);
+  const routeStepStartsRef = useRef<number[]>([]);
+  const routeDistanceRef = useRef(0);
+  const routeDurationRef = useRef(0);
+  const routeProgressIndexRef = useRef(0);
+  const routeTrackingRef = useRef(false);
+  const activeStepIndexRef = useRef(0);
+  const offRouteFixesRef = useRef(0);
+  const rerouteCooldownFixesRef = useRef(0);
+  const routingRef = useRef(false);
+  const voiceEnabledRef = useRef(false);
+  const lastSpokenCueRef = useRef("");
+  const navigationPositionHandlerRef = useRef<
+    (location: [number, number], coords: GeolocationCoordinates) => void
+  >(() => undefined);
+  const rerouteFromRef = useRef<(location: [number, number]) => void>(() => undefined);
   const searchRef = useRef<HTMLInputElement>(null);
   const [zoom, setZoom] = useState(10);
   const [coordinates, setCoordinates] = useState({ lng: -74.006, lat: 40.7128 });
@@ -866,6 +944,10 @@ export default function MinecraftMap() {
   const [routeActive, setRouteActive] = useState(false);
   const [routing, setRouting] = useState(false);
   const [routeError, setRouteError] = useState("");
+  const [navigationStatus, setNavigationStatus] = useState<NavigationStatus>("preview");
+  const [activeStepIndex, setActiveStepIndex] = useState(0);
+  const [distanceToStep, setDistanceToStep] = useState<number | null>(null);
+  const [voiceEnabled, setVoiceEnabled] = useState(false);
 
   useEffect(() => {
     if (!mapNode.current || mapRef.current) return;
@@ -984,11 +1066,14 @@ export default function MinecraftMap() {
         destinationMarkerRef.current = new maplibregl.Marker({ element: destinationNode, anchor: "bottom" })
           .setLngLat(event.lngLat)
           .addTo(map);
-        setNavigationDestination({
+        const destination = {
           title: "Dropped destination",
-          center: [event.lngLat.lng, event.lngLat.lat],
-        });
+          center: [event.lngLat.lng, event.lngLat.lat] as [number, number],
+        };
+        navigationDestinationRef.current = destination;
+        setNavigationDestination(destination);
         routeCoordinatesRef.current = [];
+        routeTrackingRef.current = false;
         setRouteSummary(null);
         setRouteSteps([]);
         setRouteActive(false);
@@ -1059,9 +1144,22 @@ export default function MinecraftMap() {
 
   const resetRoute = (removeDestination = false) => {
     routeCoordinatesRef.current = [];
+    routeDistancesRef.current = new Float64Array();
+    routeStepsRef.current = [];
+    routeStepStartsRef.current = [];
+    routeDistanceRef.current = 0;
+    routeDurationRef.current = 0;
+    routeProgressIndexRef.current = 0;
+    routeTrackingRef.current = false;
+    activeStepIndexRef.current = 0;
+    offRouteFixesRef.current = 0;
+    lastSpokenCueRef.current = "";
     setRouteSummary(null);
     setRouteSteps([]);
     setRouteActive(false);
+    setNavigationStatus("preview");
+    setActiveStepIndex(0);
+    setDistanceToStep(null);
     setRouteError("");
     const map = mapRef.current;
     const target = routeCanvasRef.current;
@@ -1069,6 +1167,7 @@ export default function MinecraftMap() {
     if (removeDestination) {
       destinationMarkerRef.current?.remove();
       destinationMarkerRef.current = null;
+      navigationDestinationRef.current = null;
       setNavigationDestination(null);
     }
   };
@@ -1083,11 +1182,14 @@ export default function MinecraftMap() {
     destinationMarkerRef.current = new maplibregl.Marker({ element: destinationNode, anchor: "bottom" })
       .setLngLat(center)
       .addTo(map);
-    setNavigationDestination({ title, center });
+    const destination = { title, center };
+    navigationDestinationRef.current = destination;
+    setNavigationDestination(destination);
     setMessage("Destination set. Select START ROUTE when ready.");
   };
 
   const endNavigation = () => {
+    if ("speechSynthesis" in window) window.speechSynthesis.cancel();
     resetRoute(true);
     setNavigationVisible(false);
     setMessage("Navigation ended.");
@@ -1237,7 +1339,9 @@ export default function MinecraftMap() {
           title: "Your location",
           detail: `GPS live · accurate to ±${Math.round(coords.accuracy)} m`,
         });
-        setMessage("");
+        const wasNavigating = routeTrackingRef.current;
+        navigationPositionHandlerRef.current(location, coords);
+        if (!wasNavigating) setMessage("");
       },
       (error) => {
         if (locationWatchRef.current !== null) {
@@ -1256,17 +1360,23 @@ export default function MinecraftMap() {
     );
   };
 
-  const startNavigation = async () => {
+  const calculateNavigationRoute = async (originOverride?: [number, number], rerouting = false) => {
     const map = mapRef.current;
-    if (!map || !navigationDestination || routing) return;
+    const destination = navigationDestinationRef.current;
+    if (!map || !destination || routingRef.current) return;
+    routingRef.current = true;
     setRouting(true);
     setRouteError("");
-    setMessage("Charting the fastest route…");
+    setNavigationStatus(rerouting ? "rerouting" : "preview");
+    setMessage(rerouting ? "Off route · charting a new path…" : "Charting the fastest route…");
 
     let origin: [number, number];
     let originLabel: RouteSummary["origin"] = "map center";
     const liveMarker = userMarkerRef.current;
-    if (liveMarker) {
+    if (originOverride) {
+      origin = originOverride;
+      originLabel = "GPS location";
+    } else if (liveMarker) {
       const location = liveMarker.getLngLat();
       origin = [location.lng, location.lat];
       originLabel = "GPS location";
@@ -1281,10 +1391,7 @@ export default function MinecraftMap() {
         });
         origin = [position.coords.longitude, position.coords.latitude];
         originLabel = "GPS location";
-        if (locationWatchRef.current === null) {
-          locateMe();
-          setLocationFollowing(false);
-        }
+        if (locationWatchRef.current === null) locateMe();
       } catch {
         const center: [number, number] = navigationOriginRef.current ?? [map.getCenter().lng, map.getCenter().lat];
         origin = center;
@@ -1297,7 +1404,7 @@ export default function MinecraftMap() {
     try {
       const params = new URLSearchParams({
         from: `${origin[0]},${origin[1]}`,
-        to: `${navigationDestination.center[0]},${navigationDestination.center[1]}`,
+        to: `${destination.center[0]},${destination.center[1]}`,
       });
       const response = await fetch(`/api/route?${params}`);
       const result = (await response.json()) as OsrmRouteResponse;
@@ -1306,34 +1413,198 @@ export default function MinecraftMap() {
         throw new Error(result.message || "No route found");
       }
 
+      const steps = route.legs.flatMap((leg) => leg.steps);
+      const stepStarts: number[] = [];
+      let stepDistance = 0;
+      for (const step of steps) {
+        stepStarts.push(stepDistance);
+        stepDistance += step.distance;
+      }
+
       routeCoordinatesRef.current = route.geometry.coordinates;
+      routeDistancesRef.current = cumulativeRouteDistances(route.geometry.coordinates);
+      routeStepsRef.current = steps;
+      routeStepStartsRef.current = stepStarts;
+      routeDistanceRef.current = route.distance;
+      routeDurationRef.current = route.duration;
+      routeProgressIndexRef.current = 0;
+      routeTrackingRef.current = originLabel === "GPS location";
+      rerouteCooldownFixesRef.current = rerouting ? 20 : 10;
+      activeStepIndexRef.current = steps.length > 1 ? 1 : 0;
+      offRouteFixesRef.current = 0;
+      lastSpokenCueRef.current = "";
       setRouteSummary({ distance: route.distance, duration: route.duration, origin: originLabel });
-      setRouteSteps(route.legs.flatMap((leg) => leg.steps));
+      setRouteSteps(steps);
+      setActiveStepIndex(activeStepIndexRef.current);
+      setDistanceToStep(stepStarts[activeStepIndexRef.current] ?? route.distance);
       setRouteActive(true);
-      setLocationFollowing(false);
+      setNavigationStatus(originLabel === "GPS location" ? "navigating" : "preview");
       const routeTarget = routeCanvasRef.current;
       if (routeTarget) renderNavigationRoute(map, routeTarget, route.geometry.coordinates);
 
-      const bounds = route.geometry.coordinates.reduce(
-        (current, coordinate) => current.extend(coordinate),
-        new maplibregl.LngLatBounds(route.geometry.coordinates[0], route.geometry.coordinates[0]),
-      );
-      map.fitBounds(bounds, {
-        padding: { top: 70, right: 70, bottom: 90, left: window.innerWidth > 720 ? 360 : 70 },
-        maxZoom: 16,
-        duration: 900,
-      });
+      if (originLabel === "GPS location") {
+        setLocationFollowing(true);
+        map.easeTo({
+          center: origin,
+          zoom: Math.max(16, map.getZoom()),
+          duration: rerouting ? 350 : 800,
+          essential: true,
+        });
+      } else {
+        const bounds = route.geometry.coordinates.reduce(
+          (current, coordinate) => current.extend(coordinate),
+          new maplibregl.LngLatBounds(route.geometry.coordinates[0], route.geometry.coordinates[0]),
+        );
+        map.fitBounds(bounds, {
+          padding: { top: 70, right: 70, bottom: 90, left: window.innerWidth > 720 ? 360 : 70 },
+          maxZoom: 16,
+          duration: 900,
+        });
+      }
       setPlace({
-        title: navigationDestination.title,
+        title: destination.title,
         detail: `${formatRouteDistance(route.distance)} · ${formatRouteDuration(route.duration)}`,
       });
-      setMessage(originLabel === "GPS location" ? "Route ready · GPS position is live." : "Route starts from the map center.");
+      setMessage(
+        originLabel === "GPS location"
+          ? rerouting
+            ? "New route found · live guidance resumed."
+            : "Live turn-by-turn navigation started."
+          : "Route preview starts from the map center · enable GPS for live guidance.",
+      );
     } catch (error) {
       setRouteError(error instanceof Error ? error.message : "A route could not be calculated.");
-      setMessage("Navigation could not chart that route.");
+      setNavigationStatus(routeTrackingRef.current ? "navigating" : "preview");
+      setMessage(rerouting ? "Could not reroute yet · continuing on the current path." : "Navigation could not chart that route.");
     } finally {
+      routingRef.current = false;
       setRouting(false);
     }
+  };
+
+  const startNavigation = () => {
+    void calculateNavigationRoute();
+  };
+
+  const handleNavigationPosition = (location: [number, number], coords: GeolocationCoordinates) => {
+    if (!routeTrackingRef.current || routeCoordinatesRef.current.length < 2) return;
+    if (routingRef.current) {
+      setNavigationStatus("rerouting");
+      return;
+    }
+
+    const closest = closestRoutePoint(location, routeCoordinatesRef.current, routeProgressIndexRef.current);
+    const offRouteThreshold = Math.max(90, Math.min(220, coords.accuracy * 2.5));
+    if (closest.distance <= offRouteThreshold) {
+      routeProgressIndexRef.current = Math.max(routeProgressIndexRef.current, closest.index);
+    }
+    const routeDistances = routeDistancesRef.current;
+    const geometryDistance = routeDistances[routeDistances.length - 1] || routeDistanceRef.current;
+    const progressRatio = Math.min(1, (routeDistances[routeProgressIndexRef.current] ?? 0) / geometryDistance);
+    const progressedDistance = routeDistanceRef.current * progressRatio;
+    const remainingRatio = Math.max(0, 1 - progressRatio);
+    const remainingDistance = routeDistanceRef.current * remainingRatio;
+    const remainingDuration = routeDurationRef.current * remainingRatio;
+    const destination = navigationDestinationRef.current;
+    const destinationDistance = destination ? distanceMeters(location, destination.center) : remainingDistance;
+    const arrivalRadius = Math.max(30, Math.min(75, coords.accuracy * 1.25));
+
+    if (destinationDistance <= arrivalRadius) {
+      routeTrackingRef.current = false;
+      setNavigationStatus("arrived");
+      setRouteSummary((current) => current ? { ...current, distance: 0, duration: 0 } : current);
+      const arrivedIndex = Math.max(0, routeStepsRef.current.length - 1);
+      activeStepIndexRef.current = arrivedIndex;
+      setActiveStepIndex(arrivedIndex);
+      setDistanceToStep(0);
+      setMessage("You have arrived at your destination.");
+      if (voiceEnabledRef.current) speakNavigation("You have arrived at your destination.");
+      return;
+    }
+
+    setRouteSummary((current) =>
+      current ? { ...current, distance: remainingDistance, duration: remainingDuration } : current,
+    );
+
+    const stepStarts = routeStepStartsRef.current;
+    let nextStepIndex = Math.max(0, routeStepsRef.current.length - 1);
+    for (let index = 1; index < stepStarts.length; index += 1) {
+      if (stepStarts[index] > progressedDistance + 12) {
+        nextStepIndex = index;
+        break;
+      }
+    }
+    const maneuverDistance = Math.max(
+      0,
+      (stepStarts[nextStepIndex] ?? routeDistanceRef.current) - progressedDistance,
+    );
+    if (nextStepIndex !== activeStepIndexRef.current) {
+      activeStepIndexRef.current = nextStepIndex;
+      setActiveStepIndex(nextStepIndex);
+      lastSpokenCueRef.current = "";
+    }
+    setDistanceToStep(maneuverDistance);
+
+    offRouteFixesRef.current = closest.distance > offRouteThreshold ? offRouteFixesRef.current + 1 : 0;
+    rerouteCooldownFixesRef.current = Math.max(0, rerouteCooldownFixesRef.current - 1);
+    if (offRouteFixesRef.current >= 3 && rerouteCooldownFixesRef.current === 0 && !routingRef.current) {
+      offRouteFixesRef.current = 0;
+      rerouteCooldownFixesRef.current = 20;
+      setNavigationStatus("rerouting");
+      rerouteFromRef.current(location);
+      return;
+    }
+
+    setNavigationStatus("navigating");
+    if (!voiceEnabledRef.current) return;
+    const step = routeStepsRef.current[nextStepIndex];
+    if (!step) return;
+    const cue = maneuverDistance <= 35 ? "now" : maneuverDistance <= 150 ? "near" : maneuverDistance <= 800 ? "early" : "";
+    const cueKey = cue ? `${nextStepIndex}:${cue}` : "";
+    if (cueKey && cueKey !== lastSpokenCueRef.current) {
+      lastSpokenCueRef.current = cueKey;
+      speakNavigation(
+        cue === "now"
+          ? `${routeInstruction(step)} now.`
+          : `In ${formatRouteDistance(maneuverDistance)}, ${routeInstruction(step).toLowerCase()}.`,
+      );
+    }
+  };
+
+  useEffect(() => {
+    rerouteFromRef.current = (location) => {
+      void calculateNavigationRoute(location, true);
+    };
+    navigationPositionHandlerRef.current = handleNavigationPosition;
+  });
+
+  const recenterNavigation = () => {
+    const map = mapRef.current;
+    const marker = userMarkerRef.current;
+    if (!map || !marker) {
+      locateMe();
+      return;
+    }
+    setLocationFollowing(true);
+    map.easeTo({ center: marker.getLngLat(), zoom: Math.max(16, map.getZoom()), duration: 600, essential: true });
+    setMessage("Following your live GPS position.");
+  };
+
+  const toggleNavigationVoice = () => {
+    if (!("speechSynthesis" in window)) {
+      setRouteError("Spoken directions are not supported by this browser.");
+      return;
+    }
+    const enabled = !voiceEnabledRef.current;
+    voiceEnabledRef.current = enabled;
+    setVoiceEnabled(enabled);
+    lastSpokenCueRef.current = "";
+    if (!enabled) {
+      window.speechSynthesis.cancel();
+      return;
+    }
+    const step = routeStepsRef.current[activeStepIndexRef.current];
+    speakNavigation(step ? `Voice guidance on. ${routeInstruction(step)}.` : "Voice guidance on.");
   };
 
   return (
@@ -1455,14 +1726,52 @@ export default function MinecraftMap() {
 
             {routeSummary && (
               <>
+                <div className={`turn-by-turn ${navigationStatus}`} aria-live="polite">
+                  <small>
+                    {navigationStatus === "arrived"
+                      ? "DESTINATION REACHED"
+                      : navigationStatus === "rerouting"
+                        ? "REROUTING…"
+                        : navigationStatus === "preview"
+                          ? "ROUTE PREVIEW"
+                          : distanceToStep == null
+                            ? "NEXT TURN"
+                            : `NEXT · ${formatRouteDistance(distanceToStep)}`}
+                  </small>
+                  <div>
+                    <span aria-hidden="true">{navigationStatus === "arrived" ? "◆" : "➤"}</span>
+                    <strong>
+                      {navigationStatus === "rerouting"
+                        ? "Finding a new path"
+                        : routeSteps[activeStepIndex]
+                          ? routeInstruction(routeSteps[activeStepIndex])
+                          : "Follow the highlighted route"}
+                    </strong>
+                  </div>
+                </div>
                 <div className="route-summary">
                   <strong>{formatRouteDuration(routeSummary.duration)}</strong>
                   <span>{formatRouteDistance(routeSummary.distance)}</span>
-                  <small>FROM {routeSummary.origin.toUpperCase()}</small>
+                  <small>
+                    {navigationStatus === "preview"
+                      ? `FROM ${routeSummary.origin.toUpperCase()}`
+                      : navigationStatus === "arrived"
+                        ? "ARRIVED"
+                        : "LIVE REMAINING"}
+                  </small>
+                </div>
+                <div className="route-controls">
+                  <button onClick={recenterNavigation}>{followingLocation ? "FOLLOWING" : "RECENTER"}</button>
+                  <button className={voiceEnabled ? "enabled" : ""} onClick={toggleNavigationVoice}>
+                    {voiceEnabled ? "VOICE ON" : "VOICE OFF"}
+                  </button>
                 </div>
                 <ol className="route-steps">
                   {routeSteps.map((step, index) => (
-                    <li key={`${step.maneuver.location.join(",")}-${index}`}>
+                    <li
+                      className={index === activeStepIndex ? "current" : index < activeStepIndex ? "passed" : ""}
+                      key={`${step.maneuver.location.join(",")}-${index}`}
+                    >
                       <span className="step-arrow" aria-hidden="true">{step.maneuver.type === "arrive" ? "◆" : "➤"}</span>
                       <span><strong>{routeInstruction(step)}</strong><small>{formatRouteDistance(step.distance)}</small></span>
                     </li>
@@ -1471,7 +1780,7 @@ export default function MinecraftMap() {
                 <button className="route-action end" onClick={endNavigation}>END NAVIGATION</button>
               </>
             )}
-            <div className="route-credit">Routing by OSRM · Map data © OpenStreetMap</div>
+            <div className="route-credit">Follow posted signs · Routing by OSRM · Map data © OpenStreetMap</div>
           </aside>
         )}
 
