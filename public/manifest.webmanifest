@@ -1,0 +1,26 @@
+{
+  "name": "Overworld — Minecraft Earth Map",
+  "short_name": "Overworld",
+  "description": "Explore and navigate the real world in the visual style of a Minecraft map.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#181711",
+  "theme_color": "#24271e",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

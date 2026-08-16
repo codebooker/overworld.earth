@@ -1645,7 +1645,10 @@ export default function MinecraftMap() {
         <div className="header-note">EARTH · SEED 2026</div>
       </header>
 
-      <section className="map-frame" aria-label="Interactive Minecraft-style world map">
+      <section
+        className={`map-frame ${routeActive ? "route-running" : ""}`}
+        aria-label="Interactive Minecraft-style world map"
+      >
         <div ref={mapNode} className="map" />
         <canvas ref={pixelCanvasRef} className="pixel-map-canvas" aria-hidden="true" />
         <canvas ref={routeCanvasRef} className="route-map-canvas" aria-hidden="true" />
@@ -1696,7 +1699,7 @@ export default function MinecraftMap() {
         </div>
 
         {navigationOpen && (
-          <aside className="navigation-panel" aria-label="Route navigation">
+          <aside className={`navigation-panel ${routeSummary ? "has-route" : ""}`} aria-label="Route navigation">
             <div className="navigation-heading">
               <span>NAVIGATION</span>
               <button onClick={() => setNavigationVisible(false)} aria-label="Close navigation">×</button>
