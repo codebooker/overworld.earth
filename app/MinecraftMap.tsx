@@ -1756,7 +1756,9 @@ export default function MinecraftMap() {
                   : "Recenter on my location"
             }
           >
-            {gpsMode === "locating" ? <span className="gps-loading" /> : "◎"}
+            {gpsMode === "locating"
+              ? <span className="gps-loading" />
+              : <span className="gps-tool-icon" aria-hidden="true" />}
           </button>
           <button
             className={navigationOpen || routeActive ? "navigation-active" : ""}
@@ -1765,7 +1767,7 @@ export default function MinecraftMap() {
             aria-pressed={navigationOpen}
             title="Navigation"
           >
-            ➤
+            <span className="navigation-tool-icon" aria-hidden="true" />
           </button>
           <button
             onClick={() => setLegendOpen((open) => !open)}
