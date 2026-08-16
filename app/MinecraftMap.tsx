@@ -45,6 +45,40 @@ type TerrainTile = {
 
 type TerrainTileCache = Map<string, TerrainTile>;
 
+type NavigationDestination = {
+  title: string;
+  center: [number, number];
+};
+
+type RouteStep = {
+  distance: number;
+  duration: number;
+  name: string;
+  maneuver: {
+    bearing_after: number;
+    location: [number, number];
+    modifier?: string;
+    type: string;
+  };
+};
+
+type RouteSummary = {
+  distance: number;
+  duration: number;
+  origin: "GPS location" | "map center";
+};
+
+type OsrmRouteResponse = {
+  code: string;
+  message?: string;
+  routes?: Array<{
+    distance: number;
+    duration: number;
+    geometry: { coordinates: Array<[number, number]>; type: "LineString" };
+    legs: Array<{ steps: RouteStep[] }>;
+  }>;
+};
+
 function terrainElevationAt(
   lng: number,
   lat: number,
@@ -524,6 +558,93 @@ function renderMovingPreview(map: MapLibreMap, target: HTMLCanvasElement) {
   target.hidden = false;
 }
 
+function renderNavigationRoute(
+  map: MapLibreMap,
+  target: HTMLCanvasElement,
+  coordinates: Array<[number, number]>,
+) {
+  const source = map.getCanvas();
+  const cellSize = minecraftCellSize();
+  const width = Math.max(1, Math.ceil(source.clientWidth / cellSize));
+  const height = Math.max(1, Math.ceil(source.clientHeight / cellSize));
+  if (target.width !== width) target.width = width;
+  if (target.height !== height) target.height = height;
+
+  const context = target.getContext("2d");
+  if (!context) return;
+  context.clearRect(0, 0, width, height);
+  if (coordinates.length < 2) return;
+
+  context.imageSmoothingEnabled = false;
+  context.lineCap = "square";
+  context.lineJoin = "miter";
+  context.beginPath();
+  for (let index = 0; index < coordinates.length; index += 1) {
+    const point = map.project(coordinates[index]);
+    const x = point.x / cellSize;
+    const y = point.y / cellSize;
+    if (index === 0) context.moveTo(x, y);
+    else context.lineTo(x, y);
+  }
+  context.strokeStyle = "#4a211d";
+  context.lineWidth = 3.5;
+  context.stroke();
+  context.strokeStyle = "#f7e9a3";
+  context.lineWidth = 1.5;
+  context.stroke();
+}
+
+function formatRouteDistance(meters: number) {
+  const miles = meters / 1609.344;
+  if (miles >= 0.2) return `${miles < 10 ? miles.toFixed(1) : Math.round(miles)} mi`;
+  return `${Math.max(50, Math.round((meters * 3.28084) / 50) * 50)} ft`;
+}
+
+function formatRouteDuration(seconds: number) {
+  const minutes = Math.max(1, Math.round(seconds / 60));
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return remainder ? `${hours} hr ${remainder} min` : `${hours} hr`;
+}
+
+function compassDirection(bearing: number) {
+  const directions = ["north", "northeast", "east", "southeast", "south", "southwest", "west", "northwest"];
+  return directions[Math.round(((bearing % 360) + 360) % 360 / 45) % 8];
+}
+
+function routeInstruction(step: RouteStep) {
+  const road = step.name ? ` ${step.name}` : " the road";
+  const modifier = step.maneuver.modifier?.replace("uturn", "U-turn") ?? "";
+  switch (step.maneuver.type) {
+    case "depart":
+      return `Head ${compassDirection(step.maneuver.bearing_after)} on${road}`;
+    case "arrive":
+      return "Arrive at your destination";
+    case "turn":
+      return `Turn ${modifier} onto${road}`;
+    case "continue":
+      return `Continue ${modifier} on${road}`;
+    case "merge":
+      return `Merge ${modifier} onto${road}`;
+    case "fork":
+      return `Keep ${modifier} onto${road}`;
+    case "on ramp":
+      return `Take the ramp ${modifier} onto${road}`;
+    case "off ramp":
+      return `Take the exit ${modifier} onto${road}`;
+    case "roundabout":
+    case "rotary":
+      return `Enter the roundabout toward${road}`;
+    case "new name":
+      return `Continue onto${road}`;
+    case "end of road":
+      return `At the end of the road, turn ${modifier} onto${road}`;
+    default:
+      return `Continue on${road}`;
+  }
+}
+
 const destinations = [
   { label: "New York", center: [-74.006, 40.7128] as [number, number], zoom: 10 },
   { label: "The Alps", center: [10.1, 46.5] as [number, number], zoom: 7 },
@@ -695,11 +816,16 @@ const minecraftStyle: maplibregl.StyleSpecification = {
 export default function MinecraftMap() {
   const mapNode = useRef<HTMLDivElement>(null);
   const pixelCanvasRef = useRef<HTMLCanvasElement>(null);
+  const routeCanvasRef = useRef<HTMLCanvasElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const markerRef = useRef<maplibregl.Marker | null>(null);
+  const destinationMarkerRef = useRef<maplibregl.Marker | null>(null);
   const userMarkerRef = useRef<maplibregl.Marker | null>(null);
   const locationWatchRef = useRef<number | null>(null);
   const followingLocationRef = useRef(false);
+  const navigationOpenRef = useRef(false);
+  const navigationOriginRef = useRef<[number, number] | null>(null);
+  const routeCoordinatesRef = useRef<Array<[number, number]>>([]);
   const searchRef = useRef<HTMLInputElement>(null);
   const [zoom, setZoom] = useState(10);
   const [coordinates, setCoordinates] = useState({ lng: -74.006, lat: 40.7128 });
@@ -712,6 +838,13 @@ export default function MinecraftMap() {
   const [ready, setReady] = useState(false);
   const [gpsMode, setGpsMode] = useState<"idle" | "locating" | "tracking">("idle");
   const [followingLocation, setFollowingLocation] = useState(false);
+  const [navigationOpen, setNavigationOpen] = useState(false);
+  const [navigationDestination, setNavigationDestination] = useState<NavigationDestination | null>(null);
+  const [routeSummary, setRouteSummary] = useState<RouteSummary | null>(null);
+  const [routeSteps, setRouteSteps] = useState<RouteStep[]>([]);
+  const [routeActive, setRouteActive] = useState(false);
+  const [routing, setRouting] = useState(false);
+  const [routeError, setRouteError] = useState("");
 
   useEffect(() => {
     if (!mapNode.current || mapRef.current) return;
@@ -761,9 +894,13 @@ export default function MinecraftMap() {
           if (!target) return;
           try {
             renderMinecraftCells(map, target, terrainCache, terrainTiles, () => renderPixels(100));
+            const routeTarget = routeCanvasRef.current;
+            if (routeTarget) renderNavigationRoute(map, routeTarget, routeCoordinatesRef.current);
             mapNode.current?.classList.remove("map-moving");
           } catch {
             renderMovingPreview(map, target);
+            const routeTarget = routeCanvasRef.current;
+            if (routeTarget) renderNavigationRoute(map, routeTarget, routeCoordinatesRef.current);
             mapNode.current?.classList.remove("map-moving");
           }
         });
@@ -775,6 +912,8 @@ export default function MinecraftMap() {
         previewFrame = null;
         const target = pixelCanvasRef.current;
         if (target) renderMovingPreview(map, target);
+        const routeTarget = routeCanvasRef.current;
+        if (routeTarget) renderNavigationRoute(map, routeTarget, routeCoordinatesRef.current);
       });
     };
     const loadingTimeout = window.setTimeout(() => setReady(true), 10000);
@@ -817,6 +956,27 @@ export default function MinecraftMap() {
       renderPixels(40);
     });
     map.on("click", (event) => {
+      if (navigationOpenRef.current) {
+        destinationMarkerRef.current?.remove();
+        const destinationNode = document.createElement("div");
+        destinationNode.className = "pixel-marker route-destination-marker";
+        destinationMarkerRef.current = new maplibregl.Marker({ element: destinationNode, anchor: "bottom" })
+          .setLngLat(event.lngLat)
+          .addTo(map);
+        setNavigationDestination({
+          title: "Dropped destination",
+          center: [event.lngLat.lng, event.lngLat.lat],
+        });
+        routeCoordinatesRef.current = [];
+        setRouteSummary(null);
+        setRouteSteps([]);
+        setRouteActive(false);
+        setRouteError("");
+        const routeTarget = routeCanvasRef.current;
+        if (routeTarget) renderNavigationRoute(map, routeTarget, []);
+        setMessage("Destination set. Select START ROUTE when ready.");
+        return;
+      }
       markerRef.current?.remove();
       const markerNode = document.createElement("div");
       markerNode.className = "pixel-marker";
@@ -840,6 +1000,7 @@ export default function MinecraftMap() {
         locationWatchRef.current = null;
       }
       userMarkerRef.current?.remove();
+      destinationMarkerRef.current?.remove();
       map.remove();
       mapRef.current = null;
     };
@@ -859,6 +1020,57 @@ export default function MinecraftMap() {
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
   }, []);
+
+  const setNavigationVisible = (open: boolean) => {
+    const wasOpen = navigationOpenRef.current;
+    navigationOpenRef.current = open;
+    setNavigationOpen(open);
+    if (open) {
+      if (!wasOpen && mapRef.current) {
+        const center = mapRef.current.getCenter();
+        navigationOriginRef.current = [center.lng, center.lat];
+      }
+      setLegendOpen(false);
+      setMessage("Search above or click the map to choose a destination.");
+      window.setTimeout(() => searchRef.current?.focus(), 0);
+    }
+  };
+
+  const resetRoute = (removeDestination = false) => {
+    routeCoordinatesRef.current = [];
+    setRouteSummary(null);
+    setRouteSteps([]);
+    setRouteActive(false);
+    setRouteError("");
+    const map = mapRef.current;
+    const target = routeCanvasRef.current;
+    if (map && target) renderNavigationRoute(map, target, []);
+    if (removeDestination) {
+      destinationMarkerRef.current?.remove();
+      destinationMarkerRef.current = null;
+      setNavigationDestination(null);
+    }
+  };
+
+  const selectNavigationDestination = (title: string, center: [number, number]) => {
+    const map = mapRef.current;
+    if (!map) return;
+    resetRoute(false);
+    destinationMarkerRef.current?.remove();
+    const destinationNode = document.createElement("div");
+    destinationNode.className = "pixel-marker route-destination-marker";
+    destinationMarkerRef.current = new maplibregl.Marker({ element: destinationNode, anchor: "bottom" })
+      .setLngLat(center)
+      .addTo(map);
+    setNavigationDestination({ title, center });
+    setMessage("Destination set. Select START ROUTE when ready.");
+  };
+
+  const endNavigation = () => {
+    resetRoute(true);
+    setNavigationVisible(false);
+    setMessage("Navigation ended.");
+  };
 
   const goTo = (title: string, center: [number, number], destinationZoom = 10, detail = "Real terrain · block by block") => {
     setLocationFollowing(false);
@@ -894,13 +1106,21 @@ export default function MinecraftMap() {
     const west = Number(result.boundingbox[2]);
     const east = Number(result.boundingbox[3]);
     const nameParts = result.display_name.split(",").map((part) => part.trim());
+    const resultCenter: [number, number] = [Number(result.lon), Number(result.lat)];
+    if (navigationOpenRef.current) {
+      selectNavigationDestination(nameParts[0], resultCenter);
+      mapRef.current?.fitBounds([[west, south], [east, north]], { padding: 90, maxZoom: 15, duration: 900 });
+      setQuery(result.display_name);
+      setResults([]);
+      return;
+    }
     setLocationFollowing(false);
     mapRef.current?.fitBounds([[west, south], [east, north]], { padding: 90, maxZoom: 14, duration: 1300 });
     markerRef.current?.remove();
     const markerNode = document.createElement("div");
     markerNode.className = "pixel-marker";
     markerRef.current = new maplibregl.Marker({ element: markerNode, anchor: "bottom" })
-      .setLngLat([Number(result.lon), Number(result.lat)])
+      .setLngLat(resultCenter)
       .addTo(mapRef.current!);
     setPlace({ title: nameParts[0], detail: nameParts.slice(1, 3).join(", ") || result.type });
     setQuery(result.display_name);
@@ -1015,6 +1235,86 @@ export default function MinecraftMap() {
     );
   };
 
+  const startNavigation = async () => {
+    const map = mapRef.current;
+    if (!map || !navigationDestination || routing) return;
+    setRouting(true);
+    setRouteError("");
+    setMessage("Charting the fastest route…");
+
+    let origin: [number, number];
+    let originLabel: RouteSummary["origin"] = "map center";
+    const liveMarker = userMarkerRef.current;
+    if (liveMarker) {
+      const location = liveMarker.getLngLat();
+      origin = [location.lng, location.lat];
+      originLabel = "GPS location";
+    } else if (navigator.geolocation) {
+      try {
+        const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: true,
+            maximumAge: 5000,
+            timeout: 8000,
+          });
+        });
+        origin = [position.coords.longitude, position.coords.latitude];
+        originLabel = "GPS location";
+        if (locationWatchRef.current === null) {
+          locateMe();
+          setLocationFollowing(false);
+        }
+      } catch {
+        const center: [number, number] = navigationOriginRef.current ?? [map.getCenter().lng, map.getCenter().lat];
+        origin = center;
+      }
+    } else {
+      const center: [number, number] = navigationOriginRef.current ?? [map.getCenter().lng, map.getCenter().lat];
+      origin = center;
+    }
+
+    try {
+      const params = new URLSearchParams({
+        from: `${origin[0]},${origin[1]}`,
+        to: `${navigationDestination.center[0]},${navigationDestination.center[1]}`,
+      });
+      const response = await fetch(`/api/route?${params}`);
+      const result = (await response.json()) as OsrmRouteResponse;
+      const route = result.routes?.[0];
+      if (!response.ok || result.code !== "Ok" || !route) {
+        throw new Error(result.message || "No route found");
+      }
+
+      routeCoordinatesRef.current = route.geometry.coordinates;
+      setRouteSummary({ distance: route.distance, duration: route.duration, origin: originLabel });
+      setRouteSteps(route.legs.flatMap((leg) => leg.steps));
+      setRouteActive(true);
+      setLocationFollowing(false);
+      const routeTarget = routeCanvasRef.current;
+      if (routeTarget) renderNavigationRoute(map, routeTarget, route.geometry.coordinates);
+
+      const bounds = route.geometry.coordinates.reduce(
+        (current, coordinate) => current.extend(coordinate),
+        new maplibregl.LngLatBounds(route.geometry.coordinates[0], route.geometry.coordinates[0]),
+      );
+      map.fitBounds(bounds, {
+        padding: { top: 70, right: 70, bottom: 90, left: window.innerWidth > 720 ? 360 : 70 },
+        maxZoom: 16,
+        duration: 900,
+      });
+      setPlace({
+        title: navigationDestination.title,
+        detail: `${formatRouteDistance(route.distance)} · ${formatRouteDuration(route.duration)}`,
+      });
+      setMessage(originLabel === "GPS location" ? "Route ready · GPS position is live." : "Route starts from the map center.");
+    } catch (error) {
+      setRouteError(error instanceof Error ? error.message : "A route could not be calculated.");
+      setMessage("Navigation could not chart that route.");
+    } finally {
+      setRouting(false);
+    }
+  };
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -1029,7 +1329,7 @@ export default function MinecraftMap() {
               ref={searchRef}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search the real world..."
+              placeholder={navigationOpen ? "Search for a destination..." : "Search the real world..."}
               aria-label="Search for a place"
               autoComplete="off"
             />
@@ -1056,6 +1356,7 @@ export default function MinecraftMap() {
       <section className="map-frame" aria-label="Interactive Minecraft-style world map">
         <div ref={mapNode} className="map" />
         <canvas ref={pixelCanvasRef} className="pixel-map-canvas" aria-hidden="true" />
+        <canvas ref={routeCanvasRef} className="route-map-canvas" aria-hidden="true" />
         <div className="pixel-grid" aria-hidden="true" />
         {!ready && <div className="map-loading"><span />GENERATING CHUNKS…</div>}
         <div className="map-title-card">
@@ -1090,8 +1391,68 @@ export default function MinecraftMap() {
           >
             {gpsMode === "locating" ? <span className="gps-loading" /> : "◎"}
           </button>
+          <button
+            className={navigationOpen || routeActive ? "navigation-active" : ""}
+            onClick={() => setNavigationVisible(!navigationOpenRef.current)}
+            aria-label={navigationOpen ? "Close navigation panel" : "Open navigation"}
+            aria-pressed={navigationOpen}
+            title="Navigation"
+          >
+            ➤
+          </button>
           <button onClick={() => setLegendOpen((open) => !open)} aria-label="Toggle map key" title="Map key">▦</button>
         </div>
+
+        {navigationOpen && (
+          <aside className="navigation-panel" aria-label="Route navigation">
+            <div className="navigation-heading">
+              <span>NAVIGATION</span>
+              <button onClick={() => setNavigationVisible(false)} aria-label="Close navigation">×</button>
+            </div>
+            <div className="navigation-locations">
+              <div>
+                <span className="location-symbol start" aria-hidden="true" />
+                <span><small>START</small><strong>{gpsMode === "tracking" ? "Live GPS position" : "Your position / map center"}</strong></span>
+              </div>
+              <div>
+                <span className="location-symbol finish" aria-hidden="true" />
+                <span><small>DESTINATION</small><strong>{navigationDestination?.title ?? "Search above or click the map"}</strong></span>
+              </div>
+            </div>
+
+            {!navigationDestination && (
+              <p className="navigation-hint">Choose a destination with the search bar, or click anywhere on the map.</p>
+            )}
+
+            {navigationDestination && !routeActive && (
+              <button className="route-action" onClick={startNavigation} disabled={routing}>
+                {routing ? "CHARTING ROUTE…" : "START ROUTE"}
+              </button>
+            )}
+
+            {routeError && <p className="route-error">{routeError}</p>}
+
+            {routeSummary && (
+              <>
+                <div className="route-summary">
+                  <strong>{formatRouteDuration(routeSummary.duration)}</strong>
+                  <span>{formatRouteDistance(routeSummary.distance)}</span>
+                  <small>FROM {routeSummary.origin.toUpperCase()}</small>
+                </div>
+                <ol className="route-steps">
+                  {routeSteps.map((step, index) => (
+                    <li key={`${step.maneuver.location.join(",")}-${index}`}>
+                      <span className="step-arrow" aria-hidden="true">{step.maneuver.type === "arrive" ? "◆" : "➤"}</span>
+                      <span><strong>{routeInstruction(step)}</strong><small>{formatRouteDistance(step.distance)}</small></span>
+                    </li>
+                  ))}
+                </ol>
+                <button className="route-action end" onClick={endNavigation}>END NAVIGATION</button>
+              </>
+            )}
+            <div className="route-credit">Routing by OSRM · Map data © OpenStreetMap</div>
+          </aside>
+        )}
 
         {legendOpen && (
           <aside className="map-key" aria-label="Map color key">
