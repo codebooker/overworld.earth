@@ -167,6 +167,11 @@ export default function MinecraftMap() {
   useEffect(() => {
     if (!mapNode.current || mapRef.current) return;
 
+    // MapLibre normally resolves its module worker beside the application
+    // bundle. Vinext fingerprints that bundle without copying the worker, so
+    // point it at the worker files shipped from /public instead.
+    maplibregl.setWorkerUrl(`${window.location.origin}/maplibre-gl-worker.mjs`);
+
     const hashParts = window.location.hash.slice(1).split("/").map(Number);
     const hasSharedView = hashParts.length === 3 && hashParts.every(Number.isFinite);
     const map = new maplibregl.Map({
@@ -183,7 +188,11 @@ export default function MinecraftMap() {
 
     map.touchZoomRotate.disableRotation();
     map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
-    map.on("load", () => setReady(true));
+    const loadingTimeout = window.setTimeout(() => setReady(true), 10000);
+    map.on("load", () => {
+      window.clearTimeout(loadingTimeout);
+      setReady(true);
+    });
     map.on("move", () => {
       const center = map.getCenter();
       setCoordinates({ lng: center.lng, lat: center.lat });
@@ -212,6 +221,7 @@ export default function MinecraftMap() {
     mapRef.current = map;
 
     return () => {
+      window.clearTimeout(loadingTimeout);
       map.remove();
       mapRef.current = null;
     };
