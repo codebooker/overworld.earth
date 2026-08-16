@@ -907,6 +907,7 @@ export default function MinecraftMap() {
   const navigationOpenRef = useRef(false);
   const navigationOriginRef = useRef<[number, number] | null>(null);
   const navigationDestinationRef = useRef<NavigationDestination | null>(null);
+  const selectedPointRef = useRef<NavigationDestination | null>(null);
   const routeCoordinatesRef = useRef<Array<[number, number]>>([]);
   const routeDistancesRef = useRef(new Float64Array());
   const routeStepsRef = useRef<RouteStep[]>([]);
@@ -1060,6 +1061,9 @@ export default function MinecraftMap() {
     });
     map.on("click", (event) => {
       if (navigationOpenRef.current) {
+        markerRef.current?.remove();
+        markerRef.current = null;
+        selectedPointRef.current = null;
         destinationMarkerRef.current?.remove();
         const destinationNode = document.createElement("div");
         destinationNode.className = "pixel-marker route-destination-marker";
@@ -1089,6 +1093,10 @@ export default function MinecraftMap() {
       markerRef.current = new maplibregl.Marker({ element: markerNode, anchor: "bottom" })
         .setLngLat(event.lngLat)
         .addTo(map);
+      selectedPointRef.current = {
+        title: "Dropped pin",
+        center: [event.lngLat.lng, event.lngLat.lat],
+      };
       setPlace({
         title: "Dropped pin",
         detail: `${event.lngLat.lat.toFixed(4)}, ${event.lngLat.lng.toFixed(4)}`,
@@ -1132,12 +1140,34 @@ export default function MinecraftMap() {
     navigationOpenRef.current = open;
     setNavigationOpen(open);
     if (open) {
+      let adoptedSelectedPoint = false;
       if (!wasOpen && mapRef.current) {
         const center = mapRef.current.getCenter();
         navigationOriginRef.current = [center.lng, center.lat];
+        const selectedPoint = selectedPointRef.current;
+        if (selectedPoint && routeCoordinatesRef.current.length === 0) {
+          markerRef.current?.remove();
+          markerRef.current = null;
+          destinationMarkerRef.current?.remove();
+          const destinationNode = document.createElement("div");
+          destinationNode.className = "pixel-marker route-destination-marker";
+          destinationMarkerRef.current = new maplibregl.Marker({ element: destinationNode, anchor: "bottom" })
+            .setLngLat(selectedPoint.center)
+            .addTo(mapRef.current);
+          navigationDestinationRef.current = selectedPoint;
+          setNavigationDestination(selectedPoint);
+          selectedPointRef.current = null;
+          adoptedSelectedPoint = true;
+        }
       }
       setLegendOpen(false);
-      setMessage("Search above or click the map to choose a destination.");
+      setMessage(
+        adoptedSelectedPoint
+          ? "Dropped pin selected as your destination. Select START ROUTE when ready."
+          : navigationDestinationRef.current
+            ? "Destination ready. Select START ROUTE when ready."
+            : "Search above or click the map to choose a destination.",
+      );
       window.setTimeout(() => searchRef.current?.focus(), 0);
     }
   };
@@ -1176,6 +1206,9 @@ export default function MinecraftMap() {
     const map = mapRef.current;
     if (!map) return;
     resetRoute(false);
+    markerRef.current?.remove();
+    markerRef.current = null;
+    selectedPointRef.current = null;
     destinationMarkerRef.current?.remove();
     const destinationNode = document.createElement("div");
     destinationNode.className = "pixel-marker route-destination-marker";
@@ -1199,6 +1232,8 @@ export default function MinecraftMap() {
     setLocationFollowing(false);
     mapRef.current?.flyTo({ center, zoom: destinationZoom, duration: 1300, essential: true });
     markerRef.current?.remove();
+    markerRef.current = null;
+    selectedPointRef.current = null;
     setPlace({ title, detail });
     setResults([]);
   };
@@ -1245,6 +1280,7 @@ export default function MinecraftMap() {
     markerRef.current = new maplibregl.Marker({ element: markerNode, anchor: "bottom" })
       .setLngLat(resultCenter)
       .addTo(mapRef.current!);
+    selectedPointRef.current = { title: nameParts[0], center: resultCenter };
     setPlace({ title: nameParts[0], detail: nameParts.slice(1, 3).join(", ") || result.type });
     setQuery(result.display_name);
     setResults([]);
