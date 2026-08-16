@@ -13,6 +13,10 @@ type SearchResult = {
   type: string;
 };
 
+type PlaceLookupResponse = {
+  title?: string;
+};
+
 type Material =
   | "grass"
   | "farmland"
@@ -1125,6 +1129,10 @@ export default function MinecraftMap() {
     let pixelTimer: number | null = null;
     let movingDetailTimer: number | null = null;
     let lastMovingDetailAt = 0;
+    let placeLookupTimer: number | null = null;
+    let placeLookupController: AbortController | null = null;
+    let lastPlaceLookupAt = 0;
+    const placeCache = new Map<string, string>();
     const terrainCache: TerrainShadeCache = { key: "", values: null };
     const terrainTiles: TerrainTileCache = new Map();
     const viewCache: MinecraftViewCache = {
@@ -1133,6 +1141,58 @@ export default function MinecraftMap() {
       zoom: 10,
       paddingCells: 0,
       renderedAt: 0,
+    };
+    const centerLookup = () => {
+      const center = map.getCenter();
+      const lng = ((center.lng + 180) % 360 + 360) % 360 - 180;
+      const lat = Math.max(-85.051, Math.min(85.051, center.lat));
+      return {
+        key: `${lat.toFixed(3)},${lng.toFixed(3)}`,
+        lat: lat.toFixed(3),
+        lng: lng.toFixed(3),
+      };
+    };
+    const updateExploredPlace = (delay = 700) => {
+      if (placeLookupTimer !== null) window.clearTimeout(placeLookupTimer);
+      placeLookupTimer = null;
+      placeLookupController?.abort();
+      placeLookupController = null;
+
+      const lookup = centerLookup();
+      const cached = placeCache.get(lookup.key);
+      if (cached) {
+        setPlace((current) => ({ ...current, title: cached }));
+        return;
+      }
+
+      placeLookupTimer = window.setTimeout(async () => {
+        placeLookupTimer = null;
+        const rateLimitDelay = Math.max(0, 1050 - (performance.now() - lastPlaceLookupAt));
+        if (rateLimitDelay > 0) {
+          updateExploredPlace(rateLimitDelay);
+          return;
+        }
+
+        const controller = new AbortController();
+        placeLookupController = controller;
+        lastPlaceLookupAt = performance.now();
+        try {
+          const params = new URLSearchParams({ lat: lookup.lat, lon: lookup.lng });
+          const response = await fetch(`/api/place?${params}`, { signal: controller.signal });
+          if (!response.ok) return;
+          const result = (await response.json()) as PlaceLookupResponse;
+          const title = result.title?.trim();
+          if (!title) return;
+          placeCache.set(lookup.key, title);
+          if (centerLookup().key === lookup.key) {
+            setPlace((current) => ({ ...current, title }));
+          }
+        } catch {
+          // Keep the last useful place name if reverse geocoding is unavailable.
+        } finally {
+          if (placeLookupController === controller) placeLookupController = null;
+        }
+      }, delay);
     };
     mapNode.current.classList.add("map-moving");
     const renderSemanticFrame = () => {
@@ -1194,11 +1254,16 @@ export default function MinecraftMap() {
       setZoom(Math.round(map.getZoom()));
       setReady(true);
       renderPixels(0);
+      updateExploredPlace(0);
       if (!hasSharedView && locationWatchRef.current === null) locateMeRef.current();
     });
     map.on("idle", () => renderPixels(0));
     map.on("movestart", () => {
       mapNode.current?.classList.add("map-moving");
+      if (placeLookupTimer !== null) window.clearTimeout(placeLookupTimer);
+      placeLookupTimer = null;
+      placeLookupController?.abort();
+      placeLookupController = null;
       if (pixelTimer !== null) window.clearTimeout(pixelTimer);
       pixelTimer = null;
       if (movingDetailTimer !== null) window.clearTimeout(movingDetailTimer);
@@ -1227,6 +1292,7 @@ export default function MinecraftMap() {
       );
       terrainCache.key = "";
       renderPixels(40);
+      updateExploredPlace();
     });
     map.on("click", (event) => {
       if (navigationOpenRef.current) {
@@ -1266,10 +1332,6 @@ export default function MinecraftMap() {
         title: "Dropped pin",
         center: [event.lngLat.lng, event.lngLat.lat],
       };
-      setPlace({
-        title: "Dropped pin",
-        detail: `${event.lngLat.lat.toFixed(4)}, ${event.lngLat.lng.toFixed(4)}`,
-      });
     });
     mapRef.current = map;
 
@@ -1277,6 +1339,8 @@ export default function MinecraftMap() {
       window.clearTimeout(loadingTimeout);
       if (pixelTimer !== null) window.clearTimeout(pixelTimer);
       if (movingDetailTimer !== null) window.clearTimeout(movingDetailTimer);
+      if (placeLookupTimer !== null) window.clearTimeout(placeLookupTimer);
+      placeLookupController?.abort();
       if (pixelFrame !== null) window.cancelAnimationFrame(pixelFrame);
       if (previewFrame !== null) window.cancelAnimationFrame(previewFrame);
       if (locationWatchRef.current !== null && navigator.geolocation) {
@@ -1482,11 +1546,7 @@ export default function MinecraftMap() {
     userMarkerRef.current = null;
     setLocationFollowing(false);
     setGpsMode("idle");
-    setPlace((current) =>
-      current.title === "Your location"
-        ? { title: current.title, detail: "GPS stopped · last known position" }
-        : current,
-    );
+    setPlace((current) => ({ ...current, detail: "GPS stopped · last known position" }));
     setMessage("GPS stopped.");
   };
 
@@ -1553,10 +1613,10 @@ export default function MinecraftMap() {
         }
 
         setGpsMode("tracking");
-        setPlace({
-          title: "Your location",
+        setPlace((current) => ({
+          ...current,
           detail: `GPS live · accurate to ±${Math.round(coords.accuracy)} m`,
-        });
+        }));
         const wasNavigating = routeTrackingRef.current;
         navigationPositionHandlerRef.current(location, coords);
         if (!wasNavigating) setMessage("");
@@ -1697,10 +1757,10 @@ export default function MinecraftMap() {
           duration: 900,
         });
       }
-      setPlace({
-        title: destination.title,
+      setPlace((current) => ({
+        ...current,
         detail: `${formatRouteDistance(route.distance)} · ${formatRouteDuration(route.duration)}`,
-      });
+      }));
       setMessage(
         originLabel === "GPS location"
           ? rerouting
