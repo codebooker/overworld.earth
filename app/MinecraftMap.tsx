@@ -47,7 +47,7 @@ type TerrainTileCache = Map<string, TerrainTile>;
 
 type MinecraftViewCache = {
   canvas: HTMLCanvasElement | null;
-  center: [number, number];
+  origin: [number, number];
   zoom: number;
   paddingCells: number;
   renderedAt: number;
@@ -201,6 +201,8 @@ function drawGeometry(
   map: MapLibreMap,
   cellSize: number,
   kind: "fill" | "line",
+  offsetX = 0,
+  offsetY = 0,
 ) {
   const project = (position: unknown) => {
     if (!Array.isArray(position) || position.length < 2) return null;
@@ -208,7 +210,7 @@ function drawGeometry(
     const lat = Number(position[1]);
     if (!Number.isFinite(lng) || !Number.isFinite(lat)) return null;
     const point = map.project([lng, lat]);
-    return { x: point.x / cellSize, y: point.y / cellSize };
+    return { x: point.x / cellSize + offsetX, y: point.y / cellSize + offsetY };
   };
 
   const traceLine = (line: unknown) => {
@@ -254,6 +256,28 @@ function drawGeometry(
 
 function minecraftCellSize() {
   return 4;
+}
+
+function minecraftWorldGrid(map: MapLibreMap) {
+  const cellSize = minecraftCellSize();
+  const zoom = map.getZoom();
+  const worldSize = 512 * 2 ** zoom;
+  const topLeft = maplibregl.MercatorCoordinate.fromLngLat(map.unproject([0, 0]));
+  const worldCellX = (topLeft.x * worldSize) / cellSize;
+  const worldCellY = (topLeft.y * worldSize) / cellSize;
+  const originCellX = Math.floor(worldCellX);
+  const originCellY = Math.floor(worldCellY);
+  const origin = new maplibregl.MercatorCoordinate(
+    (originCellX * cellSize) / worldSize,
+    (originCellY * cellSize) / worldSize,
+  ).toLngLat();
+  return {
+    origin: [origin.lng, origin.lat] as [number, number],
+    originCellX,
+    originCellY,
+    phaseX: worldCellX - originCellX,
+    phaseY: worldCellY - originCellY,
+  };
 }
 
 function mapViewportOverscan(map: MapLibreMap) {
@@ -329,8 +353,9 @@ function renderMinecraftCells(
   if (source.clientWidth === 0 || source.clientHeight === 0) return;
 
   const cellSize = minecraftCellSize();
-  const width = Math.max(1, Math.ceil(source.clientWidth / cellSize));
-  const height = Math.max(1, Math.ceil(source.clientHeight / cellSize));
+  const grid = minecraftWorldGrid(map);
+  const width = Math.max(1, Math.ceil(source.clientWidth / cellSize + grid.phaseX));
+  const height = Math.max(1, Math.ceil(source.clientHeight / cellSize + grid.phaseY));
   const paddingCells = Math.max(
     0,
     Math.floor((source.clientWidth - target.clientWidth) / (cellSize * 2)),
@@ -370,7 +395,15 @@ function renderMinecraftCells(
       context.lineWidth = 1;
     }
     for (const feature of layerFeatures) {
-      drawGeometry(context, feature.geometry as MapGeometry, map, cellSize, kind);
+      drawGeometry(
+        context,
+        feature.geometry as MapGeometry,
+        map,
+        cellSize,
+        kind,
+        grid.phaseX,
+        grid.phaseY,
+      );
     }
     const mask = context.getImageData(0, 0, width, height).data;
     const occupied = layer === "buildings" ? new Uint8Array(width * height) : undefined;
@@ -415,7 +448,6 @@ function renderMinecraftCells(
   // narrow, irregular beach from the real shoreline, while preserving mapped
   // roads, structures, cliffs, and snow. Water depth is retained separately
   // for the stepped blue bands visible on filled maps.
-  const anchor = map.project([0, 0]);
   const distanceToWater = distanceFromCells(
     width,
     height,
@@ -428,8 +460,8 @@ function renderMinecraftCells(
       const material = materials[index];
       const distance = distanceToWater[index];
       if (distance < 1 || distance > 2) continue;
-      const worldX = Math.floor((x * cellSize - anchor.x) / cellSize);
-      const worldY = Math.floor((y * cellSize - anchor.y) / cellSize);
+      const worldX = grid.originCellX + x;
+      const worldY = grid.originCellY + y;
       const noise = cellNoise(worldX, worldY, 19);
       const openShore = material === "grass" || material === "park" || material === "scrub";
       const woodedShore = material === "forest" || material === "farmland";
@@ -453,8 +485,7 @@ function renderMinecraftCells(
   // hills form irregular bands instead of vector-style feature outlines.
   const elevations = new Float32Array(width * height);
   elevations.fill(Number.NaN);
-  const center = map.getCenter();
-  const terrainKey = `${map.getZoom().toFixed(3)}/${center.lng.toFixed(5)}/${center.lat.toFixed(5)}/${width}/${height}`;
+  const terrainKey = `${map.getZoom().toFixed(3)}/${grid.originCellX}/${grid.originCellY}/${width}/${height}`;
   if (terrainCache.key === terrainKey && terrainCache.values?.length === elevations.length) {
     elevations.set(terrainCache.values);
   } else {
@@ -471,7 +502,10 @@ function renderMinecraftCells(
       for (let sx = 0; sx < sampleWidth; sx += 1) {
         const x = Math.min(width - 1, sx * step);
         const y = Math.min(height - 1, sy * step);
-        const location = map.unproject([(x + 0.5) * cellSize, (y + 0.5) * cellSize]);
+        const location = map.unproject([
+          (x + 0.5 - grid.phaseX) * cellSize,
+          (y + 0.5 - grid.phaseY) * cellSize,
+        ]);
         const terrainZoom = Math.min(12, Math.max(2, Math.floor(map.getZoom())));
         const elevation = terrainElevationAt(location.lng, location.lat, terrainZoom, terrainTiles, onTerrainReady);
         if (elevation != null) {
@@ -517,8 +551,8 @@ function renderMinecraftCells(
     for (let x = 0; x < width; x += 1) {
       const index = y * width + x;
       const material = materials[index];
-      const worldX = Math.floor((x * cellSize - anchor.x) / cellSize);
-      const worldY = Math.floor((y * cellSize - anchor.y) / cellSize);
+      const worldX = grid.originCellX + x;
+      const worldY = grid.originCellY + y;
       const hash = cellNoise(worldX, worldY, 31);
       const terrainNoise =
         smoothCellNoise(worldX, worldY, 11, 47) * 0.7 +
@@ -579,7 +613,7 @@ function renderMinecraftCells(
   }
   context.putImageData(materialImage, 0, 0);
   viewCache.canvas = renderTarget;
-  viewCache.center = [center.lng, center.lat];
+  viewCache.origin = grid.origin;
   viewCache.zoom = map.getZoom();
   viewCache.paddingCells = paddingCells;
   viewCache.renderedAt = performance.now();
@@ -637,12 +671,12 @@ function renderCachedMinecraftPreview(
   const source = map.getCanvas();
   const viewportOffsetX = Math.max(0, (source.clientWidth - target.clientWidth) / 2);
   const viewportOffsetY = Math.max(0, (source.clientHeight - target.clientHeight) / 2);
-  const cacheCenter = map.project(cache.center);
+  const cacheOrigin = map.project(cache.origin);
   const scale = 2 ** (map.getZoom() - cache.zoom);
   const width = cache.canvas.width * scale;
   const height = cache.canvas.height * scale;
-  const left = (cacheCenter.x - viewportOffsetX) / cellSize - width / 2;
-  const top = (cacheCenter.y - viewportOffsetY) / cellSize - height / 2;
+  const left = (cacheOrigin.x - viewportOffsetX) / cellSize;
+  const top = (cacheOrigin.y - viewportOffsetY) / cellSize;
   context.imageSmoothingEnabled = false;
   context.drawImage(cache.canvas, left, top, width, height);
   target.hidden = false;
@@ -663,11 +697,11 @@ function minecraftCacheNeedsRefresh(
   const scale = 2 ** (map.getZoom() - cache.zoom);
   if (Math.abs(map.getZoom() - cache.zoom) > 0.25) return true;
 
-  const cacheCenter = map.project(cache.center);
+  const cacheOrigin = map.project(cache.origin);
   const cacheWidth = cache.canvas.width * scale;
   const cacheHeight = cache.canvas.height * scale;
-  const left = (cacheCenter.x - viewportOffsetX) / cellSize - cacheWidth / 2;
-  const top = (cacheCenter.y - viewportOffsetY) / cellSize - cacheHeight / 2;
+  const left = (cacheOrigin.x - viewportOffsetX) / cellSize;
+  const top = (cacheOrigin.y - viewportOffsetY) / cellSize;
   const right = left + cacheWidth;
   const bottom = top + cacheHeight;
   const minimumBuffer = Math.max(6, cache.paddingCells * scale * 0.4);
@@ -1095,7 +1129,7 @@ export default function MinecraftMap() {
     const terrainTiles: TerrainTileCache = new Map();
     const viewCache: MinecraftViewCache = {
       canvas: null,
-      center: [-74.006, 40.7128],
+      origin: [0, 0],
       zoom: 10,
       paddingCells: 0,
       renderedAt: 0,
