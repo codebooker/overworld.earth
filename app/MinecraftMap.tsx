@@ -94,6 +94,17 @@ type OsrmRouteResponse = {
   }>;
 };
 
+function exploredPlaceDetailZoom(zoom: number) {
+  if (zoom < 4) return 3;
+  if (zoom < 6) return 5;
+  if (zoom < 9) return 8;
+  if (zoom < 11) return 10;
+  if (zoom < 13) return 12;
+  if (zoom < 14) return 13;
+  if (zoom < 15) return 14;
+  return 15;
+}
+
 function terrainElevationAt(
   lng: number,
   lat: number,
@@ -1146,10 +1157,12 @@ export default function MinecraftMap() {
       const center = map.getCenter();
       const lng = ((center.lng + 180) % 360 + 360) % 360 - 180;
       const lat = Math.max(-85.051, Math.min(85.051, center.lat));
+      const detailZoom = exploredPlaceDetailZoom(map.getZoom());
       return {
-        key: `${lat.toFixed(3)},${lng.toFixed(3)}`,
+        key: `${detailZoom}/${lat.toFixed(3)},${lng.toFixed(3)}`,
         lat: lat.toFixed(3),
         lng: lng.toFixed(3),
+        zoom: String(detailZoom),
       };
     };
     const updateExploredPlace = (delay = 700) => {
@@ -1177,7 +1190,12 @@ export default function MinecraftMap() {
         placeLookupController = controller;
         lastPlaceLookupAt = performance.now();
         try {
-          const params = new URLSearchParams({ lat: lookup.lat, lon: lookup.lng, v: "2" });
+          const params = new URLSearchParams({
+            lat: lookup.lat,
+            lon: lookup.lng,
+            zoom: lookup.zoom,
+            v: "3",
+          });
           const response = await fetch(`/api/place?${params}`, { signal: controller.signal });
           if (!response.ok) return;
           const result = (await response.json()) as PlaceLookupResponse;

@@ -36,36 +36,100 @@ function coordinate(value: string | null, limit: number) {
   return Number.isFinite(number) && Math.abs(number) <= limit ? number : null;
 }
 
-function exploredPlace(result: NominatimReverseResult) {
+function lookupZoom(value: string | null) {
+  const requested = Number(value);
+  return [3, 5, 8, 10, 12, 13, 14, 15].includes(requested) ? requested : 15;
+}
+
+function firstPlace(...names: Array<string | undefined>) {
+  for (const name of names) {
+    const trimmed = name?.trim();
+    if (trimmed) return trimmed;
+  }
+}
+
+function exploredPlace(result: NominatimReverseResult, zoom: number) {
   const address = result.address ?? {};
-  return (
-    address.neighbourhood ??
-    address.quarter ??
-    address.suburb ??
-    address.subdivision ??
-    address.residential ??
-    address.locality ??
-    address.borough ??
-    address.city_district ??
-    address.district ??
-    address.town ??
-    address.village ??
-    address.hamlet ??
-    address.city ??
-    address.municipality ??
-    address.place ??
-    address.farm ??
-    address.county ??
-    address.state ??
-    address.country ??
-    result.name ??
-    result.display_name?.split(",")[0]
-  )?.trim();
+  if (zoom <= 3) return firstPlace(address.country, address.state, result.name);
+  if (zoom <= 5) return firstPlace(address.state, address.country, result.name);
+  if (zoom <= 8) return firstPlace(address.county, address.state, address.country, result.name);
+  if (zoom <= 10) {
+    return firstPlace(
+      address.city,
+      address.town,
+      address.village,
+      address.municipality,
+      address.county,
+      address.state,
+      address.country,
+      result.name,
+    );
+  }
+  if (zoom <= 12) {
+    return firstPlace(
+      address.borough,
+      address.city_district,
+      address.district,
+      address.town,
+      address.village,
+      address.hamlet,
+      address.city,
+      address.municipality,
+      address.county,
+      address.state,
+      address.country,
+      result.name,
+    );
+  }
+  if (zoom <= 13) {
+    return firstPlace(
+      address.suburb,
+      address.subdivision,
+      address.residential,
+      address.locality,
+      address.borough,
+      address.city_district,
+      address.district,
+      address.town,
+      address.village,
+      address.hamlet,
+      address.city,
+      address.municipality,
+      address.county,
+      address.state,
+      address.country,
+      result.name,
+    );
+  }
+  return firstPlace(
+    address.neighbourhood,
+    address.quarter,
+    address.suburb,
+    address.subdivision,
+    address.residential,
+    address.locality,
+    address.borough,
+    address.city_district,
+    address.district,
+    address.town,
+    address.village,
+    address.hamlet,
+    address.city,
+    address.municipality,
+    address.place,
+    address.farm,
+    address.county,
+    address.state,
+    address.country,
+    result.name,
+    result.display_name?.split(",")[0],
+  );
 }
 
 export async function GET(request: NextRequest) {
   const lat = coordinate(request.nextUrl.searchParams.get("lat"), 90);
   const lon = coordinate(request.nextUrl.searchParams.get("lon"), 180);
+  const zoom = lookupZoom(request.nextUrl.searchParams.get("zoom"));
   if (lat == null || lon == null) {
     return Response.json({ message: "Valid latitude and longitude are required." }, { status: 400 });
   }
@@ -75,7 +139,7 @@ export async function GET(request: NextRequest) {
   endpoint.searchParams.set("lon", String(lon));
   endpoint.searchParams.set("format", "jsonv2");
   endpoint.searchParams.set("addressdetails", "1");
-  endpoint.searchParams.set("zoom", "15");
+  endpoint.searchParams.set("zoom", String(zoom));
   endpoint.searchParams.set("layer", "address");
 
   try {
@@ -93,7 +157,7 @@ export async function GET(request: NextRequest) {
     }
 
     const result = (await response.json()) as NominatimReverseResult;
-    const title = exploredPlace(result);
+    const title = exploredPlace(result, zoom);
     if (!title) return Response.json({ message: "No named place was found." }, { status: 404 });
 
     return Response.json(
