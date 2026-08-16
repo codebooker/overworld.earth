@@ -919,6 +919,8 @@ export default function MinecraftMap() {
     (location: [number, number], coords: GeolocationCoordinates) => void
   >(() => undefined);
   const rerouteFromRef = useRef<(location: [number, number]) => void>(() => undefined);
+  const locateMeRef = useRef<() => void>(() => undefined);
+  const brandMenuRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const [zoom, setZoom] = useState(10);
   const [coordinates, setCoordinates] = useState({ lng: -74.006, lat: 40.7128 });
@@ -927,6 +929,7 @@ export default function MinecraftMap() {
   const [results, setResults] = useState<SearchResult[]>([]);
   const [searching, setSearching] = useState(false);
   const [message, setMessage] = useState("");
+  const [appMenuOpen, setAppMenuOpen] = useState(false);
   const [legendOpen, setLegendOpen] = useState(false);
   const [ready, setReady] = useState(false);
   const [gpsMode, setGpsMode] = useState<"idle" | "locating" | "tracking">("idle");
@@ -1021,6 +1024,7 @@ export default function MinecraftMap() {
       setZoom(Math.round(map.getZoom()));
       setReady(true);
       renderPixels(0);
+      if (!hasSharedView && locationWatchRef.current === null) locateMeRef.current();
     });
     map.on("idle", () => renderPixels(0));
     map.on("movestart", () => {
@@ -1120,12 +1124,20 @@ export default function MinecraftMap() {
         searchRef.current?.focus();
       }
       if (event.key === "Escape") {
+        setAppMenuOpen(false);
         setResults([]);
         searchRef.current?.blur();
       }
     };
+    const closeAppMenu = (event: PointerEvent) => {
+      if (!brandMenuRef.current?.contains(event.target as Node)) setAppMenuOpen(false);
+    };
     window.addEventListener("keydown", handleShortcut);
-    return () => window.removeEventListener("keydown", handleShortcut);
+    document.addEventListener("pointerdown", closeAppMenu);
+    return () => {
+      window.removeEventListener("keydown", handleShortcut);
+      document.removeEventListener("pointerdown", closeAppMenu);
+    };
   }, []);
 
   const setNavigationVisible = (open: boolean) => {
@@ -1378,6 +1390,18 @@ export default function MinecraftMap() {
       { enableHighAccuracy: true, maximumAge: 3000, timeout: 15000 },
     );
   };
+  useEffect(() => {
+    locateMeRef.current = locateMe;
+  });
+
+  const refreshApp = () => {
+    window.location.reload();
+  };
+
+  const startOver = () => {
+    const cleanUrl = `${window.location.origin}${window.location.pathname}${window.location.search}`;
+    window.location.replace(cleanUrl);
+  };
 
   const calculateNavigationRoute = async (originOverride?: [number, number], rerouting = false) => {
     const map = mapRef.current;
@@ -1629,10 +1653,31 @@ export default function MinecraftMap() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <a className="brand" href="#" aria-label="Overworld home">
-          <span className="brand-cube" aria-hidden="true" />
-          <span>OVERWORLD</span>
-        </a>
+        <div className="brand-menu-wrap" ref={brandMenuRef}>
+          <button
+            className="brand"
+            type="button"
+            onClick={() => setAppMenuOpen((open) => !open)}
+            aria-label={appMenuOpen ? "Close Overworld menu" : "Open Overworld menu"}
+            aria-expanded={appMenuOpen}
+            aria-haspopup="menu"
+          >
+            <span className="brand-cube" aria-hidden="true" />
+            <span>OVERWORLD</span>
+          </button>
+          {appMenuOpen && (
+            <div className="app-menu" role="menu" aria-label="Overworld app menu">
+              <button type="button" role="menuitem" onClick={refreshApp}>
+                <span className="app-menu-icon" aria-hidden="true">↻</span>
+                <span><strong>REFRESH MAP</strong><small>Reload this map view</small></span>
+              </button>
+              <button type="button" role="menuitem" onClick={startOver}>
+                <span className="app-menu-icon" aria-hidden="true">⌂</span>
+                <span><strong>START OVER</strong><small>Clear everything and use your location</small></span>
+              </button>
+            </div>
+          )}
+        </div>
         <div className="search-area">
           <form className="search-shell" onSubmit={searchWorld} role="search">
             <button className="search-button" type="submit" aria-label="Search map">⌕</button>
