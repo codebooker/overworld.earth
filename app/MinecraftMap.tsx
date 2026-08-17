@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import * as maplibregl from "maplibre-gl";
 import type { Map as MapLibreMap } from "maplibre-gl";
 
@@ -1237,6 +1237,7 @@ export default function MinecraftMap() {
   const routingRef = useRef(false);
   const voiceEnabledRef = useRef(false);
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
+  const wakeLockWantedRef = useRef(false);
   const lastSpokenCueRef = useRef("");
   const navigationPositionHandlerRef = useRef<
     (location: [number, number], coords: GeolocationCoordinates) => void
@@ -1268,44 +1269,67 @@ export default function MinecraftMap() {
   const [activeStepIndex, setActiveStepIndex] = useState(0);
   const [distanceToStep, setDistanceToStep] = useState<number | null>(null);
   const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const [wakeLockState, setWakeLockState] = useState<"idle" | "requesting" | "active" | "unavailable">("idle");
   const keepScreenAwake =
     routeActive && navigationStatus !== "preview" && navigationStatus !== "arrived";
 
-  useEffect(() => {
-    if (!keepScreenAwake || !("wakeLock" in navigator)) return;
-
-    let cancelled = false;
-    const requestWakeLock = async () => {
-      if (cancelled || document.visibilityState !== "visible" || wakeLockRef.current) return;
-      try {
-        const wakeLock = await navigator.wakeLock.request("screen");
-        if (cancelled) {
-          await wakeLock.release();
-          return;
-        }
-        wakeLockRef.current = wakeLock;
-        wakeLock.addEventListener("release", () => {
-          if (wakeLockRef.current === wakeLock) wakeLockRef.current = null;
-        }, { once: true });
-      } catch {
-        // Browsers and the operating system can decline a wake lock, for
-        // example in low-power mode. Navigation should continue normally.
+  const requestNavigationWakeLock = useCallback(async () => {
+    if (!("wakeLock" in navigator) || document.visibilityState !== "visible") {
+      setWakeLockState("unavailable");
+      return false;
+    }
+    if (wakeLockRef.current && !wakeLockRef.current.released) {
+      setWakeLockState("active");
+      return true;
+    }
+    setWakeLockState("requesting");
+    try {
+      const wakeLock = await navigator.wakeLock.request("screen");
+      if (!wakeLockWantedRef.current) {
+        await wakeLock.release();
+        setWakeLockState("idle");
+        return false;
       }
-    };
+      wakeLockRef.current = wakeLock;
+      setWakeLockState("active");
+      wakeLock.addEventListener("release", () => {
+        if (wakeLockRef.current === wakeLock) wakeLockRef.current = null;
+        setWakeLockState("idle");
+      }, { once: true });
+      return true;
+    } catch {
+      // Browsers and the operating system can decline a wake lock, for
+      // example in low-power mode. Navigation should continue normally.
+      setWakeLockState("unavailable");
+      return false;
+    }
+  }, []);
+
+  const releaseNavigationWakeLock = useCallback(() => {
+    wakeLockWantedRef.current = false;
+    const wakeLock = wakeLockRef.current;
+    wakeLockRef.current = null;
+    setWakeLockState("idle");
+    if (wakeLock && !wakeLock.released) void wakeLock.release();
+  }, []);
+
+  useEffect(() => {
+    if (!keepScreenAwake) {
+      releaseNavigationWakeLock();
+      return;
+    }
+    wakeLockWantedRef.current = true;
     const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible") void requestWakeLock();
+      if (document.visibilityState === "visible") void requestNavigationWakeLock();
     };
 
-    void requestWakeLock();
+    void requestNavigationWakeLock();
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
-      cancelled = true;
       document.removeEventListener("visibilitychange", handleVisibilityChange);
-      const wakeLock = wakeLockRef.current;
-      wakeLockRef.current = null;
-      if (wakeLock && !wakeLock.released) void wakeLock.release();
+      releaseNavigationWakeLock();
     };
-  }, [keepScreenAwake]);
+  }, [keepScreenAwake, releaseNavigationWakeLock, requestNavigationWakeLock]);
 
   useEffect(() => {
     if (!mapNode.current || mapRef.current) return;
@@ -1648,6 +1672,7 @@ export default function MinecraftMap() {
   };
 
   const resetRoute = (removeDestination = false) => {
+    releaseNavigationWakeLock();
     routeCoordinatesRef.current = [];
     routeDistancesRef.current = new Float64Array();
     routeStepsRef.current = [];
@@ -1965,7 +1990,7 @@ export default function MinecraftMap() {
       routeDurationRef.current = route.duration;
       routeProgressIndexRef.current = 0;
       routeTrackingRef.current = originLabel === "GPS location";
-      rerouteCooldownFixesRef.current = rerouting ? 20 : 10;
+      rerouteCooldownFixesRef.current = rerouting ? 8 : 3;
       activeStepIndexRef.current = steps.length > 1 ? 1 : 0;
       offRouteFixesRef.current = 0;
       lastSpokenCueRef.current = "";
@@ -1994,6 +2019,7 @@ export default function MinecraftMap() {
           essential: true,
         });
       } else {
+        releaseNavigationWakeLock();
         navigationBearingRef.current = null;
         if (Math.abs(map.getBearing()) > 0.1) map.setBearing(0);
         const bounds = route.geometry.coordinates.reduce(
@@ -2024,6 +2050,7 @@ export default function MinecraftMap() {
           : "Route preview starts from the map center · enable GPS for live guidance.",
       );
     } catch (error) {
+      if (!routeTrackingRef.current) releaseNavigationWakeLock();
       setRouteError(error instanceof Error ? error.message : "A route could not be calculated.");
       setNavigationStatus(routeTrackingRef.current ? "navigating" : "preview");
       setMessage(rerouting ? "Could not reroute yet · continuing on the current path." : "Navigation could not chart that route.");
@@ -2034,6 +2061,11 @@ export default function MinecraftMap() {
   };
 
   const startNavigation = () => {
+    if (!mapRef.current || !navigationDestinationRef.current || routingRef.current) return;
+    // Make the first request directly inside the START ROUTE tap. Some mobile
+    // browsers are more reliable while transient user activation is present.
+    wakeLockWantedRef.current = true;
+    void requestNavigationWakeLock();
     void calculateNavigationRoute();
   };
 
@@ -2072,7 +2104,16 @@ export default function MinecraftMap() {
       return;
     }
 
-    const offRouteThreshold = Math.max(90, Math.min(220, coords.accuracy * 2.5));
+    const offRouteThreshold = Math.max(30, Math.min(80, coords.accuracy * 1.5));
+    const routeHeadingDelta =
+      gpsBearing != null && routeBearing != null
+        ? Math.abs(((gpsBearing - routeBearing + 540) % 360) - 180)
+        : 0;
+    const movingAgainstRoute =
+      coords.speed != null &&
+      coords.speed >= 2.5 &&
+      routeHeadingDelta > 75 &&
+      closest.distance > Math.max(12, coords.accuracy);
     if (closest.distance <= offRouteThreshold) {
       routeProgressIndexRef.current = Math.max(routeProgressIndexRef.current, closest.index);
     }
@@ -2089,6 +2130,7 @@ export default function MinecraftMap() {
 
     if (destinationDistance <= arrivalRadius) {
       routeTrackingRef.current = false;
+      releaseNavigationWakeLock();
       navigationBearingRef.current = null;
       if (map && Math.abs(map.getBearing()) > 0.1) {
         map.easeTo({ bearing: 0, duration: 700, essential: true });
@@ -2127,11 +2169,14 @@ export default function MinecraftMap() {
     }
     setDistanceToStep(maneuverDistance);
 
-    offRouteFixesRef.current = closest.distance > offRouteThreshold ? offRouteFixesRef.current + 1 : 0;
+    offRouteFixesRef.current =
+      closest.distance > offRouteThreshold || movingAgainstRoute
+        ? offRouteFixesRef.current + 1
+        : 0;
     rerouteCooldownFixesRef.current = Math.max(0, rerouteCooldownFixesRef.current - 1);
-    if (offRouteFixesRef.current >= 3 && rerouteCooldownFixesRef.current === 0 && !routingRef.current) {
+    if (offRouteFixesRef.current >= 2 && rerouteCooldownFixesRef.current === 0 && !routingRef.current) {
       offRouteFixesRef.current = 0;
-      rerouteCooldownFixesRef.current = 20;
+      rerouteCooldownFixesRef.current = 8;
       setNavigationStatus("rerouting");
       rerouteFromRef.current(location);
       return;
@@ -2423,6 +2468,28 @@ export default function MinecraftMap() {
                   <button className={voiceEnabled ? "enabled" : ""} onClick={toggleNavigationVoice}>
                     {voiceEnabled ? "VOICE ON" : "VOICE OFF"}
                   </button>
+                  {navigationStatus !== "preview" && navigationStatus !== "arrived" && (
+                    <button
+                      className={wakeLockState === "active" ? "enabled" : ""}
+                      onClick={() => void requestNavigationWakeLock()}
+                      aria-pressed={wakeLockState === "active"}
+                      title={
+                        wakeLockState === "active"
+                          ? "Screen wake lock is active"
+                          : wakeLockState === "unavailable"
+                            ? "Screen wake lock was unavailable — tap to retry"
+                            : "Keep the screen awake during navigation"
+                      }
+                    >
+                      {wakeLockState === "active"
+                        ? "SCREEN ON"
+                        : wakeLockState === "requesting"
+                          ? "SCREEN…"
+                          : wakeLockState === "unavailable"
+                            ? "RETRY SCREEN"
+                            : "KEEP AWAKE"}
+                    </button>
+                  )}
                 </div>
                 <ol className="route-steps">
                   {routeSteps.map((step, index) => (

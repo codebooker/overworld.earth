@@ -111,7 +111,7 @@ button { touch-action: manipulation; }
 .route-summary strong { color: #426b35; font-size: 22px; line-height: 1; }
 .route-summary span { color: #655a43; font-size: 11px; }
 .route-summary small { grid-column: 1 / -1; color: #81745a; font-size: 7px; letter-spacing: .1em; }
-.route-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; padding: 8px 0; border-bottom: 1px solid #aa9b75; }
+.route-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); gap: 7px; padding: 8px 0; border-bottom: 1px solid #aa9b75; }
 .route-controls button { padding: 7px 4px; color: #4d4433; background: #c8ba95; border: 1px solid #77694f; cursor: pointer; font-size: 7px; font-weight: 900; letter-spacing: .08em; }
 .route-controls button:hover, .route-controls button:focus-visible { background: #b8aa85; outline: 2px solid #f5e9c7; }
 .route-controls button.enabled { color: #fff3ce; background: #426b35; border-color: #263d20; }
