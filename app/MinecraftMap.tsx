@@ -1236,6 +1236,7 @@ export default function MinecraftMap() {
   const rerouteCooldownFixesRef = useRef(0);
   const routingRef = useRef(false);
   const voiceEnabledRef = useRef(false);
+  const wakeLockRef = useRef<WakeLockSentinel | null>(null);
   const lastSpokenCueRef = useRef("");
   const navigationPositionHandlerRef = useRef<
     (location: [number, number], coords: GeolocationCoordinates) => void
@@ -1267,6 +1268,44 @@ export default function MinecraftMap() {
   const [activeStepIndex, setActiveStepIndex] = useState(0);
   const [distanceToStep, setDistanceToStep] = useState<number | null>(null);
   const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const keepScreenAwake =
+    routeActive && navigationStatus !== "preview" && navigationStatus !== "arrived";
+
+  useEffect(() => {
+    if (!keepScreenAwake || !("wakeLock" in navigator)) return;
+
+    let cancelled = false;
+    const requestWakeLock = async () => {
+      if (cancelled || document.visibilityState !== "visible" || wakeLockRef.current) return;
+      try {
+        const wakeLock = await navigator.wakeLock.request("screen");
+        if (cancelled) {
+          await wakeLock.release();
+          return;
+        }
+        wakeLockRef.current = wakeLock;
+        wakeLock.addEventListener("release", () => {
+          if (wakeLockRef.current === wakeLock) wakeLockRef.current = null;
+        }, { once: true });
+      } catch {
+        // Browsers and the operating system can decline a wake lock, for
+        // example in low-power mode. Navigation should continue normally.
+      }
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") void requestWakeLock();
+    };
+
+    void requestWakeLock();
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      cancelled = true;
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      const wakeLock = wakeLockRef.current;
+      wakeLockRef.current = null;
+      if (wakeLock && !wakeLock.released) void wakeLock.release();
+    };
+  }, [keepScreenAwake]);
 
   useEffect(() => {
     if (!mapNode.current || mapRef.current) return;
