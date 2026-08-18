@@ -119,6 +119,8 @@ type RouteSummary = {
 
 type NavigationStatus = "preview" | "navigating" | "rerouting" | "arrived";
 
+const MAP_LABELS_STORAGE_KEY = "overworld.map-labels";
+
 type OsrmRouteResponse = {
   code: string;
   message?: string;
@@ -1371,6 +1373,8 @@ export default function MinecraftMap() {
   const pixelCanvasRef = useRef<HTMLCanvasElement>(null);
   const routeCanvasRef = useRef<HTMLCanvasElement>(null);
   const placeLabelCanvasRef = useRef<HTMLCanvasElement>(null);
+  const placeLabelsVisibleRef = useRef(true);
+  const renderPlaceLabelsRef = useRef<() => void>(() => undefined);
   const mapRef = useRef<MapLibreMap | null>(null);
   const markerRef = useRef<maplibregl.Marker | null>(null);
   const destinationMarkerRef = useRef<maplibregl.Marker | null>(null);
@@ -1414,6 +1418,7 @@ export default function MinecraftMap() {
   const [message, setMessage] = useState("");
   const [appMenuOpen, setAppMenuOpen] = useState(false);
   const [legendOpen, setLegendOpen] = useState(false);
+  const [placeLabelsVisible, setPlaceLabelsVisible] = useState(true);
   const [ready, setReady] = useState(false);
   const [gpsMode, setGpsMode] = useState<"idle" | "locating" | "tracking">("idle");
   const [followingLocation, setFollowingLocation] = useState(false);
@@ -1431,6 +1436,16 @@ export default function MinecraftMap() {
   const [wakeLockState, setWakeLockState] = useState<"idle" | "requesting" | "active" | "unavailable">("idle");
   const keepScreenAwake =
     routeActive && navigationStatus !== "preview" && navigationStatus !== "arrived";
+
+  useEffect(() => {
+    try {
+      const visible = window.localStorage.getItem(MAP_LABELS_STORAGE_KEY) !== "hidden";
+      placeLabelsVisibleRef.current = visible;
+      setPlaceLabelsVisible(visible);
+    } catch {
+      // Keep labels visible when device storage is unavailable.
+    }
+  }, []);
 
   const requestNavigationWakeLock = useCallback(async () => {
     if (!("wakeLock" in navigator) || document.visibilityState !== "visible") {
@@ -1614,8 +1629,11 @@ export default function MinecraftMap() {
     mapNode.current.classList.add("map-moving");
     const renderLabels = () => {
       const target = placeLabelCanvasRef.current;
-      if (target) renderPlaceLabels(map, target, placeLabels);
+      if (target) {
+        renderPlaceLabels(map, target, placeLabelsVisibleRef.current ? placeLabels : []);
+      }
     };
+    renderPlaceLabelsRef.current = renderLabels;
     const refreshPlaceLabels = (preserveExisting = false) => {
       try {
         const loaded = loadedPlaceLabels(map);
@@ -1796,6 +1814,7 @@ export default function MinecraftMap() {
 
     return () => {
       disposed = true;
+      renderPlaceLabelsRef.current = () => undefined;
       window.clearTimeout(loadingTimeout);
       if (pixelTimer !== null) window.clearTimeout(pixelTimer);
       if (movingDetailTimer !== null) window.clearTimeout(movingDetailTimer);
@@ -1873,6 +1892,18 @@ export default function MinecraftMap() {
       );
       window.setTimeout(() => searchRef.current?.focus(), 0);
     }
+  };
+
+  const togglePlaceLabels = () => {
+    const visible = !placeLabelsVisibleRef.current;
+    placeLabelsVisibleRef.current = visible;
+    setPlaceLabelsVisible(visible);
+    try {
+      window.localStorage.setItem(MAP_LABELS_STORAGE_KEY, visible ? "visible" : "hidden");
+    } catch {
+      // The toggle still works for this session when device storage is unavailable.
+    }
+    renderPlaceLabelsRef.current();
   };
 
   const resetRoute = (removeDestination = false) => {
@@ -2572,6 +2603,15 @@ export default function MinecraftMap() {
             title="Navigation"
           >
             <span className="navigation-tool-icon" aria-hidden="true" />
+          </button>
+          <button
+            className={placeLabelsVisible ? "labels-active" : ""}
+            onClick={togglePlaceLabels}
+            aria-label={placeLabelsVisible ? "Hide map labels" : "Show map labels"}
+            aria-pressed={placeLabelsVisible}
+            title={placeLabelsVisible ? "Hide map labels" : "Show map labels"}
+          >
+            <span className="labels-tool-icon" aria-hidden="true">ABC</span>
           </button>
           <button
             onClick={() => setLegendOpen((open) => !open)}
