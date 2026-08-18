@@ -6,13 +6,13 @@
 :root { --ink: #29251e; --paper: #e3d8b7; --paper-dark: #b9a982; --green: #426b35; }
 * { box-sizing: border-box; }
 html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; overscroll-behavior: none; }
-body { background: #181711; color: var(--ink); font-family: var(--font-geist-mono), ui-monospace, monospace; -webkit-text-size-adjust: 100%; }
+body { background: #181711; color: var(--ink); font-family: "MinecraftMap", var(--font-geist-mono), ui-monospace, monospace; -webkit-text-size-adjust: 100%; }
 button, input { font: inherit; -webkit-tap-highlight-color: transparent; }
 button { touch-action: manipulation; }
 .app-shell { width: 100%; height: 100svh; height: 100dvh; display: flex; flex-direction: column; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
 .topbar { height: 68px; flex: 0 0 68px; display: grid; grid-template-columns: minmax(180px, 1fr) minmax(280px, 560px) minmax(180px, 1fr); align-items: center; gap: 24px; padding: 0 24px; color: #f2ecd8; background: #24271e; border-bottom: 4px solid #15170f; box-shadow: inset 0 -1px #4a5039; z-index: 10; }
 .brand-menu-wrap { position: relative; width: fit-content; }
-.brand { width: fit-content; display: inline-flex; align-items: center; gap: 11px; padding: 0; color: inherit; text-align: left; background: transparent; border: 0; cursor: pointer; font-family: var(--font-geist-mono), monospace; font-size: 17px; font-weight: 900; letter-spacing: .08em; }
+.brand { width: fit-content; display: inline-flex; align-items: center; gap: 11px; padding: 0; color: inherit; text-align: left; background: transparent; border: 0; cursor: pointer; font-family: "MinecraftMap", var(--font-geist-mono), monospace; font-size: 17px; font-weight: 900; letter-spacing: .08em; }
 .brand:focus-visible { outline: 2px solid #f0e5c4; outline-offset: 5px; }
 .brand-cube { width: 27px; height: 27px; background: linear-gradient(#5b853e 0 36%, transparent 36%), linear-gradient(90deg, #74543b 0 28%, #8d6947 28% 70%, #694a34 70%); border: 3px solid #15170f; box-shadow: inset 0 0 0 1px #a2b75a, 3px 3px 0 #15170f; }
 .app-menu { position: absolute; z-index: 50; top: calc(100% + 14px); left: 0; width: 242px; padding: 5px; color: #342e22; background: #ded2ae; border: 2px solid #302a1d; box-shadow: inset 0 0 0 2px #f2e7ca, 4px 4px 0 rgba(16,16,10,.65); }
@@ -48,7 +48,7 @@ button { touch-action: manipulation; }
 .route-map-canvas { position: absolute; z-index: 2; inset: 0; width: 100%; height: 100%; pointer-events: none; image-rendering: pixelated; image-rendering: crisp-edges; }
 .place-label-canvas { position: absolute; z-index: 3; inset: 0; width: 100%; height: 100%; pointer-events: none; image-rendering: pixelated; image-rendering: crisp-edges; }
 .maplibregl-control-container, .maplibregl-marker { z-index: 4; }
-.maplibregl-ctrl-attrib { font-family: var(--font-geist-mono), monospace; font-size: 9px; background: rgba(226,216,184,.86) !important; }
+.maplibregl-ctrl-attrib { font-family: "MinecraftMap", var(--font-geist-mono), monospace; font-size: 9px; background: rgba(226,216,184,.86) !important; }
 .maplibregl-ctrl-attrib a { color: #3f4931; }
 .pixel-marker { width: 18px; height: 24px; background: #b33b2e; border: 3px solid #4a211d; box-shadow: inset 0 0 0 2px #df7251, 3px 3px 0 rgba(31,25,16,.6); }
 .pixel-marker::after { content: ""; position: absolute; left: 3px; bottom: -7px; width: 6px; height: 6px; background: #4a211d; transform: rotate(45deg); z-index: -1; }

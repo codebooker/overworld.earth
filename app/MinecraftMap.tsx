@@ -1051,11 +1051,11 @@ function renderPlaceLabels(
     context.strokeStyle = "#29251e";
     context.lineWidth = 4;
     context.strokeText(text, textX, textY);
-    context.fillStyle = "#f0e3b5";
+    context.fillStyle = "#ffffff";
     context.fillText(text, textX, textY);
     context.fillStyle = "#29251e";
     context.fillRect(anchorX - 2, anchorY - 2, 5, 5);
-    context.fillStyle = "#f0e3b5";
+    context.fillStyle = "#ffffff";
     context.fillRect(anchorX - 1, anchorY - 1, 3, 3);
   }
 }
