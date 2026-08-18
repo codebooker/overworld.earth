@@ -82,6 +82,17 @@ type MinecraftViewCache = {
   renderedAt: number;
 };
 
+type PlaceLabel = {
+  name: string;
+  placeClass: string;
+  rank: number;
+  coordinates: [number, number];
+};
+
+function placeLabelKey(label: PlaceLabel) {
+  return `${label.name}|${label.placeClass}|${label.coordinates[0].toFixed(4)}|${label.coordinates[1].toFixed(4)}`;
+}
+
 type NavigationDestination = {
   title: string;
   center: [number, number];
@@ -902,6 +913,153 @@ function renderNavigationRoute(
   context.stroke();
 }
 
+function loadedPlaceLabels(map: MapLibreMap) {
+  const labels: PlaceLabel[] = [];
+  const seen = new Set<string>();
+  const features = map.querySourceFeatures("world", { sourceLayer: "place" });
+
+  for (const feature of features) {
+    if (feature.geometry.type !== "Point") continue;
+    const properties = feature.properties;
+    const nameProperty = properties?.["name:en"] ?? properties?.name;
+    const classProperty = properties?.class;
+    const coordinates = feature.geometry.coordinates;
+    if (
+      typeof nameProperty !== "string" ||
+      typeof classProperty !== "string" ||
+      !Array.isArray(coordinates) ||
+      typeof coordinates[0] !== "number" ||
+      typeof coordinates[1] !== "number"
+    ) continue;
+
+    const name = nameProperty.trim();
+    if (!name) continue;
+    const key = placeLabelKey({
+      name,
+      placeClass: classProperty,
+      rank: 0,
+      coordinates: [coordinates[0], coordinates[1]],
+    });
+    if (seen.has(key)) continue;
+    seen.add(key);
+    labels.push({
+      name,
+      placeClass: classProperty,
+      rank: typeof properties?.rank === "number" ? properties.rank : 30,
+      coordinates: [coordinates[0], coordinates[1]],
+    });
+  }
+
+  return labels;
+}
+
+function placeLabelVisible(label: PlaceLabel, zoom: number) {
+  const { placeClass, rank } = label;
+  if (placeClass === "continent") return zoom < 3.2;
+  if (placeClass === "country") return zoom < 6.5 && (zoom >= 3.5 || rank <= 4);
+  if (placeClass === "state" || placeClass === "province") return zoom >= 3.2 && zoom < 8.5;
+  if (placeClass === "city") {
+    const maximumRank = zoom < 4 ? 2 : zoom < 5 ? 3 : zoom < 6 ? 4 : zoom < 7 ? 5 : zoom < 8 ? 7 : zoom < 9 ? 10 : 30;
+    return rank <= maximumRank;
+  }
+  if (placeClass === "town") return zoom >= 8 && (zoom >= 9 || rank <= 10);
+  if (placeClass === "village") return zoom >= 10;
+  if (placeClass === "suburb" || placeClass === "borough" || placeClass === "quarter") return zoom >= 12;
+  if (placeClass === "neighbourhood" || placeClass === "neighborhood") return zoom >= 13;
+  if (placeClass === "hamlet") return zoom >= 13.5;
+  return false;
+}
+
+function placeLabelPriority(label: PlaceLabel) {
+  const classPriority: Record<string, number> = {
+    continent: 0,
+    country: 1,
+    state: 2,
+    province: 2,
+    city: 3,
+    town: 4,
+    village: 5,
+    suburb: 6,
+    borough: 6,
+    quarter: 7,
+    neighbourhood: 8,
+    neighborhood: 8,
+    hamlet: 9,
+  };
+  return (classPriority[label.placeClass] ?? 10) * 100 + label.rank;
+}
+
+function placeLabelFontSize(label: PlaceLabel, zoom: number) {
+  if (label.placeClass === "continent") return 16;
+  if (label.placeClass === "country") return 14;
+  if (label.placeClass === "state" || label.placeClass === "province") return 13;
+  if (label.placeClass === "city" && label.rank <= 5) return zoom >= 10 ? 15 : 13;
+  if (label.placeClass === "city") return 13;
+  if (label.placeClass === "town") return 12;
+  return 10;
+}
+
+function renderPlaceLabels(
+  map: MapLibreMap,
+  target: HTMLCanvasElement,
+  labels: PlaceLabel[],
+) {
+  const source = map.getCanvas();
+  const width = Math.max(1, Math.round(target.clientWidth || source.clientWidth));
+  const height = Math.max(1, Math.round(target.clientHeight || source.clientHeight));
+  const viewportOffsetX = Math.max(0, (source.clientWidth - width) / 2);
+  const viewportOffsetY = Math.max(0, (source.clientHeight - height) / 2);
+  if (target.width !== width) target.width = width;
+  if (target.height !== height) target.height = height;
+
+  const context = target.getContext("2d");
+  if (!context) return;
+  context.clearRect(0, 0, width, height);
+  const zoom = map.getZoom();
+  const occupied: Array<[number, number, number, number]> = [];
+  const candidates = labels
+    .filter((label) => placeLabelVisible(label, zoom))
+    .sort((left, right) => placeLabelPriority(left) - placeLabelPriority(right));
+
+  context.imageSmoothingEnabled = false;
+  context.textAlign = "left";
+  context.textBaseline = "bottom";
+  context.lineJoin = "miter";
+
+  for (const label of candidates) {
+    const projected = map.project(label.coordinates);
+    const anchorX = Math.round(projected.x - viewportOffsetX);
+    const anchorY = Math.round(projected.y - viewportOffsetY);
+    if (anchorX < -80 || anchorX > width + 80 || anchorY < -30 || anchorY > height + 30) continue;
+
+    const fontSize = placeLabelFontSize(label, zoom);
+    const text = label.name.toLocaleUpperCase("en-US");
+    context.font = `${fontSize}px "MinecraftMap", ui-monospace, monospace`;
+    const textWidth = Math.ceil(context.measureText(text).width);
+    const textX = Math.round(anchorX - textWidth / 2);
+    const textY = anchorY - 6;
+    const bounds: [number, number, number, number] = [
+      textX - 4,
+      textY - fontSize - 4,
+      textX + textWidth + 4,
+      anchorY + 5,
+    ];
+    if (bounds[2] < 0 || bounds[0] > width || bounds[3] < 0 || bounds[1] > height) continue;
+    if (occupied.some((box) => bounds[0] < box[2] && bounds[2] > box[0] && bounds[1] < box[3] && bounds[3] > box[1])) continue;
+    occupied.push(bounds);
+
+    context.strokeStyle = "#29251e";
+    context.lineWidth = 4;
+    context.strokeText(text, textX, textY);
+    context.fillStyle = "#f0e3b5";
+    context.fillText(text, textX, textY);
+    context.fillStyle = "#29251e";
+    context.fillRect(anchorX - 2, anchorY - 2, 5, 5);
+    context.fillStyle = "#f0e3b5";
+    context.fillRect(anchorX - 1, anchorY - 1, 3, 3);
+  }
+}
+
 function formatRouteDistance(meters: number) {
   if (meters <= 0) return "0 ft";
   const miles = meters / 1609.344;
@@ -1212,6 +1370,7 @@ export default function MinecraftMap() {
   const mapNode = useRef<HTMLDivElement>(null);
   const pixelCanvasRef = useRef<HTMLCanvasElement>(null);
   const routeCanvasRef = useRef<HTMLCanvasElement>(null);
+  const placeLabelCanvasRef = useRef<HTMLCanvasElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const markerRef = useRef<maplibregl.Marker | null>(null);
   const destinationMarkerRef = useRef<maplibregl.Marker | null>(null);
@@ -1375,9 +1534,12 @@ export default function MinecraftMap() {
     let movingDetailTimer: number | null = null;
     let lastMovingDetailAt = 0;
     let placeLookupTimer: number | null = null;
+    let placeLabelRefreshTimer: number | null = null;
     let placeLookupController: AbortController | null = null;
     let lastPlaceLookupAt = 0;
+    let disposed = false;
     const placeCache = new Map<string, string>();
+    let placeLabels: PlaceLabel[] = [];
     const terrainCache: TerrainShadeCache = { key: "", values: null };
     const terrainTiles: TerrainTileCache = new Map();
     const viewCache: MinecraftViewCache = {
@@ -1450,6 +1612,35 @@ export default function MinecraftMap() {
       }, delay);
     };
     mapNode.current.classList.add("map-moving");
+    const renderLabels = () => {
+      const target = placeLabelCanvasRef.current;
+      if (target) renderPlaceLabels(map, target, placeLabels);
+    };
+    const refreshPlaceLabels = (preserveExisting = false) => {
+      try {
+        const loaded = loadedPlaceLabels(map);
+        if (preserveExisting) {
+          const merged = new Map(placeLabels.map((label) => [placeLabelKey(label), label]));
+          loaded.forEach((label) => merged.set(placeLabelKey(label), label));
+          placeLabels = Array.from(merged.values());
+        } else if (loaded.length > 0) {
+          placeLabels = loaded;
+        }
+      } catch {
+        // Source tiles can briefly be unavailable while MapLibre swaps zoom levels.
+      }
+      renderLabels();
+    };
+    const schedulePlaceLabelRefresh = () => {
+      if (placeLabelRefreshTimer !== null) window.clearTimeout(placeLabelRefreshTimer);
+      placeLabelRefreshTimer = window.setTimeout(() => {
+        placeLabelRefreshTimer = null;
+        refreshPlaceLabels(true);
+      }, 80);
+    };
+    void document.fonts.load('12px "MinecraftMap"').then(() => {
+      if (!disposed) renderLabels();
+    });
     const renderSemanticFrame = () => {
       if (pixelFrame !== null) return;
       pixelFrame = window.requestAnimationFrame(() => {
@@ -1460,11 +1651,13 @@ export default function MinecraftMap() {
           renderMinecraftCells(map, target, terrainCache, terrainTiles, viewCache, () => renderPixels(100));
           const routeTarget = routeCanvasRef.current;
           if (routeTarget) renderNavigationRoute(map, routeTarget, routeCoordinatesRef.current);
+          renderLabels();
           mapNode.current?.classList.remove("map-moving");
         } catch {
           renderCachedMinecraftPreview(map, target, viewCache);
           const routeTarget = routeCanvasRef.current;
           if (routeTarget) renderNavigationRoute(map, routeTarget, routeCoordinatesRef.current);
+          renderLabels();
           mapNode.current?.classList.remove("map-moving");
         }
       });
@@ -1498,6 +1691,7 @@ export default function MinecraftMap() {
         }
         const routeTarget = routeCanvasRef.current;
         if (routeTarget) renderNavigationRoute(map, routeTarget, routeCoordinatesRef.current);
+        renderLabels();
       });
     };
     const loadingTimeout = window.setTimeout(() => setReady(true), 10000);
@@ -1508,11 +1702,18 @@ export default function MinecraftMap() {
       setCoordinates({ lng: center.lng, lat: center.lat });
       setZoom(Math.round(map.getZoom()));
       setReady(true);
+      refreshPlaceLabels();
       renderPixels(0);
       updateExploredPlace(0);
       if (!hasSharedView && locationWatchRef.current === null) locateMeRef.current();
     });
-    map.on("idle", () => renderPixels(0));
+    map.on("idle", () => {
+      refreshPlaceLabels();
+      renderPixels(0);
+    });
+    map.on("sourcedata", (event) => {
+      if (event.sourceId === "world") schedulePlaceLabelRefresh();
+    });
     map.on("movestart", () => {
       mapNode.current?.classList.add("map-moving");
       if (placeLookupTimer !== null) window.clearTimeout(placeLookupTimer);
@@ -1546,6 +1747,7 @@ export default function MinecraftMap() {
         `#${map.getZoom().toFixed(1)}/${center.lat.toFixed(4)}/${center.lng.toFixed(4)}`,
       );
       terrainCache.key = "";
+      refreshPlaceLabels(true);
       renderPixels(40);
       updateExploredPlace();
     });
@@ -1593,9 +1795,11 @@ export default function MinecraftMap() {
     mapRef.current = map;
 
     return () => {
+      disposed = true;
       window.clearTimeout(loadingTimeout);
       if (pixelTimer !== null) window.clearTimeout(pixelTimer);
       if (movingDetailTimer !== null) window.clearTimeout(movingDetailTimer);
+      if (placeLabelRefreshTimer !== null) window.clearTimeout(placeLabelRefreshTimer);
       if (placeLookupTimer !== null) window.clearTimeout(placeLookupTimer);
       placeLookupController?.abort();
       if (pixelFrame !== null) window.cancelAnimationFrame(pixelFrame);
@@ -2323,6 +2527,7 @@ export default function MinecraftMap() {
         <div ref={mapNode} className="map" />
         <canvas ref={pixelCanvasRef} className="pixel-map-canvas" aria-hidden="true" />
         <canvas ref={routeCanvasRef} className="route-map-canvas" aria-hidden="true" />
+        <canvas ref={placeLabelCanvasRef} className="place-label-canvas" aria-hidden="true" />
         <div className="pixel-grid" aria-hidden="true" />
         {!ready && <div className="map-loading"><span />GENERATING CHUNKS…</div>}
         <div className="map-title-card">
